@@ -36,7 +36,10 @@ def position(packet: dict) -> tuple[float, float] | None:
     if latitude is None or longitude is None:
         return None
     try:
-        latitude, longitude = float(latitude), float(longitude)
+        # Round to the 1e-7 precision of Meshtastic's integer encoding so a
+        # latitudeI/longitudeI round-trip doesn't pick up float noise (e.g.
+        # 348683400 * 1e-7 == 34.868339999999996, not 34.86834).
+        latitude, longitude = round(float(latitude), 7), round(float(longitude), 7)
     except (TypeError, ValueError):
         return None
     if not all(map(math.isfinite, (latitude, longitude))):
