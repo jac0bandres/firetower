@@ -56,6 +56,16 @@ without waiting on the radio pipeline or the model.
       `GET`/`POST`/`DELETE /api/priority_nodes`, show a "priority node: &lt;role&gt;" tag
       on matching tickets in the table.
 
+## Intelligence — `!ai` assistant
+
+- [x] `!ai <question>` on the mesh replies by DM (never broadcast, never
+      becomes a ticket), in a persistent per-sender thread (`ai_threads`/
+      `ai_messages`), with the model's context built from every ticket
+      triaged on the channel so far. Fixed a real bug found via live testing:
+      `qwen3:4b` leaks its reasoning trace into unconstrained chat replies
+      despite `think=False`; now stripped. Covered by
+      `tests/test_ai_assistant.py` + `tests/test_gateway_ai.py` (14 tests).
+
 ## Stretch (after the above, time permitting)
 
 - [ ] Hop count + traceroute button (`CLAUDE.md` §7 in handoff)

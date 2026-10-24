@@ -48,6 +48,20 @@ CREATE TABLE IF NOT EXISTS node_positions (
     received_at TEXT NOT NULL,
     meshtastic_packet_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ai_threads (
+    thread_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT UNIQUE NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL REFERENCES ai_threads(thread_id),
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -199,6 +213,37 @@ def get_node_position(node_id: str, max_age_seconds: int = 1800) -> dict | None:
         return None
     age = datetime.now(timezone.utc) - datetime.fromisoformat(row["received_at"])
     return dict(row) if timedelta(0) <= age <= timedelta(seconds=max_age_seconds) else None
+
+
+def get_or_create_ai_thread(node_id: str) -> int:
+    with connect() as conn:
+        row = conn.execute("SELECT thread_id FROM ai_threads WHERE node_id = ?", (node_id,)).fetchone()
+        if row is not None:
+            return row["thread_id"]
+        cursor = conn.execute(
+            "INSERT INTO ai_threads(node_id, created_at) VALUES (?, ?)",
+            (node_id, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def add_ai_message(thread_id: int, role: str, content: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO ai_messages(thread_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (thread_id, role, content, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def list_ai_thread_messages(thread_id: int) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT role, content, created_at FROM ai_messages WHERE thread_id = ? ORDER BY id",
+            (thread_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 if __name__ == "__main__":

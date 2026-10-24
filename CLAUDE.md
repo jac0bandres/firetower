@@ -145,6 +145,20 @@ CREATE TABLE node_positions (
     received_at TEXT NOT NULL,
     meshtastic_packet_json TEXT NOT NULL
 );
+
+CREATE TABLE ai_threads (
+    thread_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT UNIQUE NOT NULL,           -- one running !ai thread per sender
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE ai_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL REFERENCES ai_threads(thread_id),
+    role TEXT NOT NULL,                     -- user | assistant
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 ```
 
 Open in WAL mode (`PRAGMA journal_mode=WAL;`) since `board.py` polls while
@@ -168,6 +182,8 @@ if it fires, the ticket is tagged `raised_by_keyword` and shown on the board.
   after removing protobuf `raw` objects and encoding byte payloads. Leave
   tickets without coordinates unpinned on maps.
 - Use our own channel + PSK, never the default public channel. Gateway node name should contain "bot".
+- A message starting `!ai <question>` (case-insensitive) is routed to `ai_assistant.answer()` instead of triage — it never becomes a ticket. The reply goes out via `gateway.send_ai_reply()`, DM only, `AI ` prefix, chunked and capped at `AI_MAX_CHUNKS` (3) so one answer can't flood the mesh with airtime. Each sender gets one persistent `ai_threads` row (`db.get_or_create_ai_thread`), so follow-up `!ai` messages continue the same conversation; the model's context is the thread history plus every ticket triaged on the channel so far (`ai_assistant.build_channel_context()`, capped to `CONTEXT_TICKET_LIMIT`).
+- `qwen3:4b`'s `think=False` only reliably suppresses its reasoning trace on `format`-constrained calls (like `triage.py`'s extraction). Unconstrained chat calls (like `ai_assistant.py`'s) can still leak a `...</think>` block into `message.content` — strip everything up to and including the last `</think>` before using the reply.
 
 ## Hard rules
 

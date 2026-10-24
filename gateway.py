@@ -16,6 +16,7 @@ from pubsub import pub
 
 load_dotenv()
 
+import ai_assistant
 import db
 import meshtastic_packets as packets
 import triage
@@ -23,6 +24,9 @@ from logging_config import setup_logging
 
 MESHTASTIC_PORT = os.environ.get("MESHTASTIC_PORT")
 ACK_PREFIX = "FT "
+AI_PREFIX = "AI "
+AI_COMMAND = "!ai"
+AI_MAX_CHUNKS = 3
 DEDUPE_WINDOW_SECONDS = 120
 MAX_CHUNK_BYTES = 200
 CHANNEL_INDEX = int(os.environ.get("FIRETOWER_CHANNEL_INDEX", "0"))
@@ -50,6 +54,19 @@ def on_receive(packet, interface):
     packet_id = str(packet_id)
     dedupe_key = f"{sender}:{packet_id}"
     if db.is_duplicate_packet(dedupe_key):
+        return
+
+    stripped = message.strip()
+    if stripped[:len(AI_COMMAND)].lower() == AI_COMMAND:
+        db.mark_packet_seen(dedupe_key)
+        question = stripped[len(AI_COMMAND):].strip()
+        channel = packet.get("channel", CHANNEL_INDEX)
+        if not question:
+            send_ai_reply(sender, "Ask a question after !ai, e.g. '!ai how many open emergencies'.",
+                           interface, channel)
+            return
+        reply = ai_assistant.answer(sender, question)
+        send_ai_reply(sender, reply, interface, channel)
         return
 
     result = triage.triage(message, sender)
@@ -98,6 +115,53 @@ def send_ack(node_id: str, ticket_code: str, interface, channel_index: int = CHA
     if len(encoded) > MAX_CHUNK_BYTES:
         raise ValueError("Acknowledgment exceeds the Meshtastic payload limit")
     interface.sendText(message, destinationId=node_id, channelIndex=channel_index)
+
+
+def _chunk_text(text: str, max_bytes: int) -> list[str]:
+    """Word-wrap text into chunks whose UTF-8 encoding stays under max_bytes,
+    hard-splitting any single word that alone exceeds the budget."""
+    chunks = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}".strip()
+        if len(candidate.encode("utf-8")) <= max_bytes:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        current = word
+        while len(current.encode("utf-8")) > max_bytes:
+            piece = current.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
+            if not piece:
+                break
+            chunks.append(piece)
+            current = current[len(piece):]
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def send_ai_reply(node_id: str, reply: str, interface, channel_index: int = CHANNEL_INDEX) -> None:
+    """DM-only, never broadcast — chunked to the radio payload limit, capped
+    at AI_MAX_CHUNKS so one answer can't flood the mesh with airtime."""
+    reserve = len(AI_PREFIX.encode("utf-8")) + len(f"({AI_MAX_CHUNKS}/{AI_MAX_CHUNKS}) ".encode("utf-8"))
+    budget = MAX_CHUNK_BYTES - reserve
+    chunks = _chunk_text(reply.strip(), budget)
+
+    if len(chunks) > AI_MAX_CHUNKS:
+        chunks = chunks[:AI_MAX_CHUNKS]
+        marker = "…"
+        last = chunks[-1]
+        while last and len((last + marker).encode("utf-8")) > budget:
+            last = last[:-1]
+        chunks[-1] = (last + marker) if last else marker
+
+    total = len(chunks) or 1
+    for index, chunk in enumerate(chunks or [""], start=1):
+        label = AI_PREFIX if total == 1 else f"{AI_PREFIX}({index}/{total}) "
+        interface.sendText(f"{label}{chunk}", destinationId=node_id, channelIndex=channel_index)
+        if index < total:
+            time.sleep(3)
 
 
 def main():
