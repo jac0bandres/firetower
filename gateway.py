@@ -40,10 +40,23 @@ CLARIFICATION_TTL_SECONDS = int(os.environ.get("FIRETOWER_CLARIFICATION_TTL_SECO
 
 
 def _accepted_packet(packet: dict, interface) -> bool:
-    if not isinstance(packet, dict) or packet.get("channel") != CHANNEL_INDEX:
+    if not isinstance(packet, dict):
+        return False
+    # protobuf-to-dict conversion omits `channel` entirely when it's 0 (the
+    # default value, and our primary channel) — a packet with no `channel`
+    # key is on channel 0, not "no channel". Missing != rejected.
+    channel = packet.get("channel")
+    if channel is None:
+        channel = 0
+    if channel != CHANNEL_INDEX:
+        logger.debug("Rejected packet: channel=%s (want %s) from=%s",
+                      channel, CHANNEL_INDEX, packet.get("from"))
         return False
     own_number = getattr(getattr(interface, "myInfo", None), "my_node_num", None)
-    return packet.get("from") != own_number
+    accepted = packet.get("from") != own_number
+    if not accepted:
+        logger.debug("Rejected packet: from our own node %s", own_number)
+    return accepted
 
 
 def validate_radio_channel(interface) -> str:
@@ -67,6 +80,9 @@ def validate_radio_channel(interface) -> str:
 
 
 def on_receive(packet, interface):
+    logger.debug("on_receive fired: channel=%s from=%s portnum=%s",
+                  packet.get("channel"), packet.get("from"),
+                  packet.get("decoded", {}).get("portnum") if isinstance(packet, dict) else None)
     if not _accepted_packet(packet, interface):
         return
     sender = packets.node_id(packet)
