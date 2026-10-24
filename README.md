@@ -14,7 +14,37 @@ Other mesh AI projects answer the person who asked. Firetower sorts
 everyone's messages for the person who has to act, keeps working offline, and
 syncs when the link returns.
 
-See [CLAUDE.md](CLAUDE.md) for architecture, schema, and dev setup.
+See [CLAUDE.md](CLAUDE.md) for the full architecture, schema, and dev setup.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A["Field radio\nphone + node A"] -->|"LoRa mesh\nprivate channel + PSK"| B["Gateway laptop\nnode B on USB"]
+    B --> G["gateway.py\n(long-running process)"]
+    G -->|"dedupe by packet_id\n(seen_packets, 120s)"| G
+    G --> T["triage.py\nkeyword net + priority floor"]
+    T -->|"HTTP, localhost:11434\nformat=schema, think=false"| O[("Ollama\nqwen3:4b / llama3.2:3b")]
+    T --> DB[("SQLite\nfiretower.db")]
+    G -->|"ticket ack DM\n(FT prefix, <=200B)"| A
+
+    DB --> BOARD["board.py\n(FastAPI, separate process)"]
+    BOARD --> UI["Coordinator board\nstatic/"]
+    BOARD --> R["router.py\nonline/offline probe"]
+    R -->|online| CLOUD[("DigitalOcean /\nhome GPU via Tailscale")]
+    R -->|offline| O
+
+    DB -.->|"when online"| S["sync.py"]
+    S -.-> SF[("Snowflake")]
+
+    BOARD -.->|"911 call card\nread aloud (optional)"| EL[("ElevenLabs\n(base station only)")]
+    EL -.->|"offline fallback"| PIP[("Piper\n(local TTS)")]
+```
+
+ElevenLabs/Piper is optional and one-directional: the board calls it to read
+the 911 script aloud at the base station. It is never wired into the mesh,
+never triggers a call by itself, and is not required for the core triage loop
+to work.
 
 ## Quickstart
 
