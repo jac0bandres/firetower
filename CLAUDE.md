@@ -175,3 +175,4 @@ Run the board: `uvicorn board:app --reload`. Run the gateway: `python gateway.py
 - No CDN links in `static/` — vendor JS/CSS into `static/vendor/` so the board works offline.
 - Triage must degrade gracefully: if the JSON-schema extraction from Ollama fails, fall back to keyword-only classification rather than dropping the message.
 - `router.py` is the only place that decides online vs. offline; other modules ask it, they don't probe the network themselves.
+- `FIRETOWER_MOCK=1` makes `board.py` serve `fixtures/mock_tickets.json` from memory instead of the real DB — lets the board/frontend be built and demoed against the real API shape before `db.py`/`triage.py` are implemented. Keep `fixtures/mock_tickets.json` in sync with the ticket schema above if you add a column.
