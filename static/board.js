@@ -15,6 +15,8 @@ const elements = {
   rows: document.getElementById("rows"),
   ticketCount: document.getElementById("ticket-count"),
   lastUpdated: document.getElementById("last-updated"),
+  emergencyPanel: document.getElementById("emergency-panel"),
+  emergencyCards: document.getElementById("emergency-cards"),
 };
 
 let map;
@@ -182,6 +184,78 @@ function renderRows(tickets) {
   elements.rows.replaceChildren(fragment);
 }
 
+function emergencyScript(ticket) {
+  const report = ticket.what_happened || ticket.raw_text || "Details not provided";
+  const place = ticket.location || "Location not provided";
+  const people = Number.isInteger(ticket.injured_count)
+    ? `The report mentions ${ticket.injured_count} injured ${ticket.injured_count === 1 ? "person" : "people"}.`
+    : "The number of injured people is unknown.";
+  return `I am calling from a field coordination point. We received an emergency report, ticket ${ticket.ticket_code}. ${report}. The reported location is ${place}. ${people} The reporting radio node is ${ticket.node_id}. This is an unverified field report. Please advise and send assistance.`;
+}
+
+function renderEmergencyCards(tickets) {
+  const emergencies = tickets.filter((ticket) => ticket.urgency === "EMERGENCY" && ticket.status === "open");
+  elements.emergencyPanel.hidden = emergencies.length === 0;
+  const fragment = document.createDocumentFragment();
+
+  for (const ticket of emergencies) {
+    const card = document.createElement("article");
+    card.className = "emergency-card";
+
+    const heading = document.createElement("div");
+    heading.className = "emergency-card-heading";
+    const title = document.createElement("h3");
+    title.textContent = `Prepare 911 call · ${ticket.ticket_code}`;
+    const received = document.createElement("span");
+    received.textContent = `Received ${formatTime(ticket.received_at)}`;
+    heading.append(title, received);
+
+    const facts = document.createElement("p");
+    facts.className = "emergency-facts";
+    facts.textContent = `${ticket.location || "Location not provided"} · ${ticket.what_happened || ticket.raw_text || "Details not provided"}`;
+
+    const scriptLabel = document.createElement("p");
+    scriptLabel.className = "script-label";
+    scriptLabel.textContent = "Read this script to the dispatcher";
+    const script = document.createElement("blockquote");
+    script.className = "call-script";
+    script.textContent = emergencyScript(ticket);
+
+    const actionRow = document.createElement("div");
+    actionRow.className = "emergency-action-row";
+    const note = document.createElement("p");
+    note.className = "human-call-note";
+    note.textContent = "You must place the call yourself.";
+    const calledButton = document.createElement("button");
+    calledButton.type = "button";
+    calledButton.className = "called-button";
+    calledButton.textContent = "I called 911";
+    calledButton.addEventListener("click", () => markEmergencyAssigned(ticket.ticket_code, calledButton));
+    actionRow.append(note, calledButton);
+
+    card.append(heading, facts, scriptLabel, script, actionRow);
+    fragment.append(card);
+  }
+  elements.emergencyCards.replaceChildren(fragment);
+}
+
+async function markEmergencyAssigned(ticketCode, button) {
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/tickets/${encodeURIComponent(ticketCode)}/status?status=assigned`, {
+      method: "POST",
+    });
+    if (!response.ok) throw new Error("Could not update ticket status");
+    button.textContent = "Marked assigned";
+    await poll();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "I called 911";
+    elements.lastUpdated.textContent = "Could not update ticket status";
+    console.error("Ticket status update failed", error);
+  }
+}
+
 function updateBoard(tickets) {
   latestTickets = [...tickets].sort((a, b) =>
     (URGENCY_ORDER[a.urgency] ?? 99) - (URGENCY_ORDER[b.urgency] ?? 99) ||
@@ -195,6 +269,7 @@ function updateBoard(tickets) {
     : "No radio GPS positions yet. Run with FIRETOWER_MOCK=1 to preview the North Georgia demo points.";
   elements.fitMap.disabled = !located || !mapReady;
   syncMarkers(latestTickets);
+  renderEmergencyCards(latestTickets);
 
   const signature = JSON.stringify(latestTickets);
   if (signature !== lastRenderedTickets) {

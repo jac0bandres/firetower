@@ -46,10 +46,10 @@ without waiting on the radio pipeline or the model.
       supplies the vector map and Mapterhorn supplies terrain and contours. Mock
       tickets have synthetic North Georgia positions; map tiles need an online
       tile source.
-- [ ] Swap `board.py` off `FIRETOWER_MOCK` once `db.py` is live: verify the
+- [x] Swap `board.py` off `FIRETOWER_MOCK` once `db.py` is live: verify the
       real `db.*` calls return the exact same shape as
       `fixtures/mock_tickets.json`, then demo with `FIRETOWER_MOCK=0`.
-- [ ] Build the 911 call card UI: red banner for open `EMERGENCY` tickets, a
+- [x] Build the 911 call card UI: red banner for open `EMERGENCY` tickets, a
       "Prepare 911 call" card with the ready-to-read script, an "I called 911"
       button that `POST`s `/api/tickets/{code}/status=assigned`. Never auto-dials.
 - [ ] Add priority-node toggle UI: let the coordinator mark/unmark a node via
