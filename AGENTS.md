@@ -170,6 +170,13 @@ CREATE TABLE pending_clarifications (
     missing_fields TEXT NOT NULL,           -- comma-separated: location,injured_count
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE people (
+    node_id TEXT PRIMARY KEY,
+    display_name TEXT,
+    last_known_address TEXT,
+    updated_at TEXT NOT NULL
+);
 ```
 
 Open in WAL mode (`PRAGMA journal_mode=WAL;`) since `board.py` polls while
@@ -185,16 +192,19 @@ if it fires, the ticket is tagged `raised_by_keyword` and shown on the board.
 ## Radio rules (`gateway.py`)
 
 - Payload limit is **bytes**, not characters: ≤ 200 bytes per chunk, UTF-8, no emoji; max 3 chunks ~3s apart.
-- Reply by DM only; never broadcast; never process our own node's messages or anything starting `FT `.
+- Reply by DM only; never broadcast; never process our own node's messages or anything starting with `GATEWAY_NAME` (our ack prefix — e.g. "Responder", set from the device's own `longName` at startup, falling back to "Firetower" for tests/direct calls).
 - Dedupe by packet id for ≥ 120s (`seen_packets`).
 - Text and GPS positions arrive as separate Meshtastic packets. Subscribe to
   `meshtastic.receive.text` and `meshtastic.receive.position`, join by `fromId`,
   and attach only a recent known position. Preserve packet dictionaries as JSON
   after removing protobuf `raw` objects and encoding byte payloads. Leave
   tickets without coordinates unpinned on maps.
+- **A received packet's `channel` key is *absent*, not `0`, when it's actually on channel 0** — protobuf-to-dict conversion omits fields at their default value. `_accepted_packet` treats a missing channel as `0`; don't reintroduce a bare `packet.get("channel") != CHANNEL_INDEX` check, it silently drops every message on the primary channel (a real bug found via live hardware testing).
+- The team's virtual-node test harness sends GPS (and a display name) as JSON over `PRIVATE_APP`, not a standard `POSITION_APP` packet: `{"id":"!virt0003","name":"...","lat":...,"lon":...}`. `gateway.on_simulator_position()` (subscribed to `meshtastic.receive.data.PRIVATE_APP`) parses it via `meshtastic_packets.simulator_position()`/`simulator_name()` and saves it exactly like real GPS — the packet's own `fromId` is the sender, not the JSON `"id"` field (that's just a cosmetic label in the harness).
 - Use our own channel + PSK, never the default public channel. Gateway node name should contain "bot".
 - A message starting `!ai <question>` (case-insensitive) is routed to `ai_assistant.answer()` instead of triage — it never becomes a ticket. The reply goes out via `gateway.send_ai_reply()`, DM only, `AI ` prefix, chunked and capped at `AI_MAX_CHUNKS` (3) so one answer can't flood the mesh with airtime. Each sender gets one persistent `ai_threads` row (`db.get_or_create_ai_thread`), so follow-up `!ai` messages continue the same conversation; the model's context is the thread history plus every ticket triaged on the channel so far (`ai_assistant.build_channel_context()`, capped to `CONTEXT_TICKET_LIMIT`).
-- `qwen3:4b`'s `think=False` only reliably suppresses its reasoning trace on `format`-constrained calls (like `triage.py`'s extraction). Unconstrained chat calls (like `ai_assistant.py`'s) can still leak a `...</think>` block into `message.content` — strip everything up to and including the last `</think>` before using the reply.
+- `qwen3:4b`'s `think=False` only reliably suppresses its reasoning trace on `format`-constrained calls (like `triage.py`'s extraction). Unconstrained chat calls (like `ai_assistant.py`'s, and `gateway._ai_clarification_question`'s) can still leak a `...</think>` block into `message.content` — strip everything up to and including the last `</think>` before using the reply.
+- A new EMERGENCY/PRIORITY ticket missing `location` or `injured_count`: first tries to autofill `location` from `db.get_person(sender)["last_known_address"]` (the `people` table — accumulated from prior tickets and clarification replies, never from the current message's own extraction, so it only fires for a sender we've heard from before). If still missing something, `gateway._ai_clarification_question()` asks Ollama to phrase one short follow-up question from the actual message content, falling back to a static template (`_clarification_question()`) if the model fails or returns empty — the follow-up always goes out either way. **There's a `CLARIFICATION_SEND_DELAY_SECONDS` (default 5s) gap between the ack and this question** — two RELIABLE sends back-to-back collide on the half-duplex radio (confirmed live twice: the ack delivers, the immediately-following message doesn't).
 - A new EMERGENCY/PRIORITY ticket missing `location` or `injured_count` gets one follow-up DM (`gateway.send_ticket_note`, templated, not model-generated — deterministic and doesn't risk the thinking-leak bug on the critical path) and a row in `pending_clarifications`. The sender's *next* plain-text message (not `!ai`) is treated as the answer: `triage.extract_with_model()` runs on it, and only the fields that were missing get written onto the *same* ticket via `db.update_ticket_fields` — it never creates a second ticket. `!ai` always takes precedence over a pending clarification. Entries expire after `FIRETOWER_CLARIFICATION_TTL_SECONDS` (default 600s) so an unrelated message hours later isn't misread as the reply.
 
 ## Hard rules

@@ -96,6 +96,33 @@ without waiting on the radio pipeline or the model.
       needs filling in rather than silently no-op'ing.
       `tests/test_snowflake_rag.py` (5 tests).
 
+## Real-hardware fixes and features (found via live radio testing)
+
+- [x] Fixed a critical bug found live: protobuf-to-dict conversion omits
+      `channel` when it's 0 (our primary channel), so every real message on
+      the default channel was being silently rejected. `_accepted_packet`
+      now treats a missing channel as 0.
+- [x] GPS capture for the team's virtual-node simulator: it sends lat/lon
+      (+ a display name) as JSON over `PRIVATE_APP`, not standard
+      `POSITION_APP`. New `gateway.on_simulator_position()` +
+      `meshtastic_packets.simulator_position()`/`simulator_name()`.
+- [x] Person profiles (`people` table): accumulates known address/name per
+      sender; autofills a new ticket's missing location from a known
+      sender's last address. Clarification replies also update the profile.
+- [x] Clarification questions are now AI-generated (Ollama, with a static
+      template fallback) instead of fixed text, phrased from the actual
+      message content.
+- [x] Reply prefix uses the gateway's own radio node name (e.g.
+      "Responder") instead of a generic "FT " label.
+- [x] Fixed a second real bug found live (same failure mode, confirmed
+      twice): two RELIABLE sends back-to-back can collide on the
+      half-duplex radio — the first delivers, the second silently doesn't.
+      Added `FIRETOWER_CLARIFICATION_SEND_DELAY_SECONDS` (default 5s)
+      between the ack and the clarification question.
+      `tests/test_simulator_position.py`, `tests/test_people.py`,
+      `tests/test_gateway_profile.py`, plus additions to
+      `tests/test_gateway_clarification.py`: 91 tests passing total.
+
 ## Stretch (after the above, time permitting)
 
 - [ ] Hop count + traceroute button (`CLAUDE.md` §7 in handoff)

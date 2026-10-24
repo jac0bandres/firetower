@@ -69,6 +69,13 @@ CREATE TABLE IF NOT EXISTS pending_clarifications (
     missing_fields TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS people (
+    node_id TEXT PRIMARY KEY,
+    display_name TEXT,
+    last_known_address TEXT,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -283,6 +290,31 @@ def get_pending_clarification(node_id: str, max_age_seconds: int = 600) -> dict 
 def clear_pending_clarification(node_id: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM pending_clarifications WHERE node_id = ?", (node_id,))
+        conn.commit()
+
+
+def get_person(node_id: str) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM people WHERE node_id = ?", (node_id,)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def upsert_person(node_id: str, display_name: str | None = None,
+                   last_known_address: str | None = None) -> None:
+    """Accumulates known info about a sender — only overwrites a field when a
+    new non-empty value is given, so one source (e.g. a later message with no
+    name) never blanks out what a prior source already taught us."""
+    existing = get_person(node_id)
+    display_name = display_name or (existing["display_name"] if existing else None)
+    last_known_address = last_known_address or (existing["last_known_address"] if existing else None)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO people(node_id, display_name, last_known_address, updated_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET "
+            "display_name = excluded.display_name, last_known_address = excluded.last_known_address, "
+            "updated_at = excluded.updated_at",
+            (node_id, display_name, last_known_address, datetime.now(timezone.utc).isoformat()),
+        )
         conn.commit()
 
 

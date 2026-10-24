@@ -54,6 +54,59 @@ def position(packet: dict) -> tuple[float, float] | None:
     return latitude, longitude
 
 
+def _simulator_payload(packet: dict) -> dict | None:
+    """Parse the team's virtual-node test harness's format: a JSON blob over
+    the PRIVATE_APP portnum, e.g. {"id":"!virt0003","name":"...",
+    "lat":34.51867,"lon":-83.98231,"time":...}. Not a Meshtastic standard —
+    real GPS/fixed-position nodes use position() instead."""
+    decoded = packet.get("decoded")
+    if not isinstance(decoded, dict) or decoded.get("portnum") != "PRIVATE_APP":
+        return None
+    payload = decoded.get("payload")
+    if isinstance(payload, (bytes, bytearray)):
+        try:
+            payload = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(payload, str):
+        return None
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def simulator_position(packet: dict) -> tuple[float, float] | None:
+    """lat/lon from the virtual-node simulator's JSON payload, or None. The
+    packet's own fromId is used as the sender elsewhere, not the JSON "id"
+    field — that's just a cosmetic display name in this harness."""
+    data = _simulator_payload(packet)
+    if data is None:
+        return None
+    try:
+        latitude = float(data["lat"])
+        longitude = float(data["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(map(math.isfinite, (latitude, longitude))):
+        return None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None
+    if latitude == 0 and longitude == 0:
+        return None
+    return latitude, longitude
+
+
+def simulator_name(packet: dict) -> str | None:
+    """Display name from the virtual-node simulator's JSON payload, if any."""
+    data = _simulator_payload(packet)
+    if data is None:
+        return None
+    name = data.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
 def packet_json(packet: dict) -> str:
     """Preserve the received fields; encode byte payloads and omit protobuf objects.
 

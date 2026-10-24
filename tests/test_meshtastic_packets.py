@@ -64,7 +64,7 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(snapshot["decoded"]["payload"]["encoding"], "base64")
         self.assertNotIn("raw", snapshot)
         self.assertEqual(self.interface.sent, [
-            ("FT FT-0001 received", {"destinationId": self.sender, "channelIndex": 0})
+            (f"{gateway.GATEWAY_NAME} FT-0001 received", {"destinationId": self.sender, "channelIndex": 0})
         ])
 
     def test_missing_or_stale_position_does_not_pin_ticket(self):
