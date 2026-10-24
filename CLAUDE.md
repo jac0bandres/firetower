@@ -26,6 +26,68 @@ router.py: online/offline check; SITREP summaries go to the cloud model
            when online, the laptop model when offline.
 ```
 
+```mermaid
+flowchart TD
+    A["Field radio\nphone + node A"] -->|"LoRa mesh\nprivate channel + PSK"| B["Gateway laptop\nnode B on USB"]
+    B --> G["gateway.py\n(long-running process)"]
+    G -->|"dedupe by packet_id\n(seen_packets, 120s)"| G
+    G --> T["triage.py\nkeyword net + priority floor"]
+    T -->|"HTTP, localhost:11434\nformat=schema, think=false"| O[("Ollama\nqwen3:4b / llama3.2:3b")]
+    T --> DB[("SQLite\nfiretower.db")]
+    G -->|"ticket ack DM\n(FT prefix, <=200B)"| A
+
+    DB --> BOARD["board.py\n(FastAPI, separate process)"]
+    BOARD --> UI["Coordinator board\nstatic/"]
+    BOARD --> R["router.py\nonline/offline probe"]
+    R -->|online| CLOUD[("DigitalOcean /\nhome GPU via Tailscale")]
+    R -->|offline| O
+
+    DB -.->|"when online"| S["sync.py"]
+    S -.-> SF[("Snowflake")]
+
+    BOARD -.->|"911 call card\nread aloud (optional)"| EL[("ElevenLabs\n(base station only)")]
+    EL -.->|"offline fallback"| PIP[("Piper\n(local TTS)")]
+```
+
+ElevenLabs/Piper is optional and one-directional: the board calls it to read the
+911 script aloud at the base station. It is never wired into the mesh, never
+triggers a call by itself, and is not required for the core triage loop to work.
+
+## Triage extraction schema
+
+`triage.extract_with_model()` passes this JSON schema to Ollama's `format`
+parameter so `qwen3:4b` returns structured output instead of prose. Only
+fields the model itself should produce are here — `raised_by_keyword` is
+computed afterward by `keyword_floor()`, and the priority-node floor is
+applied afterward by `apply_priority_floor()`, so neither is asked of the
+model:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "urgency": {
+      "type": "string",
+      "enum": ["EMERGENCY", "PRIORITY", "WELFARE", "ROUTINE"]
+    },
+    "location": {
+      "type": ["string", "null"]
+    },
+    "what_happened": {
+      "type": ["string", "null"]
+    },
+    "injured_count": {
+      "type": ["integer", "null"]
+    }
+  },
+  "required": ["urgency", "location", "what_happened", "injured_count"]
+}
+```
+
+Called with `options={"temperature": 0}` and `think=False` (or `/no_think` in
+the prompt). `triage()` merges this output with the keyword floor and
+priority-node floor into the final `TriageResult`.
+
 ## Model tiers
 
 | Job | Internet up | Internet down |

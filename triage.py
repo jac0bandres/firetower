@@ -17,6 +17,22 @@ URGENCY_LEVELS = ["ROUTINE", "WELFARE", "PRIORITY", "EMERGENCY"]
 EMERGENCY_KEYWORDS = ["fire", "can't breathe", "bleeding", "unconscious", "trapped"]
 PRIORITY_KEYWORDS = ["insulin", "medication", "injured", "hurt"]
 
+# Passed to Ollama's `format` param. Only fields the model should produce —
+# raised_by_keyword and the priority floor are applied afterward in triage().
+EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "urgency": {
+            "type": "string",
+            "enum": URGENCY_LEVELS,
+        },
+        "location": {"type": ["string", "null"]},
+        "what_happened": {"type": ["string", "null"]},
+        "injured_count": {"type": ["integer", "null"]},
+    },
+    "required": ["urgency", "location", "what_happened", "injured_count"],
+}
+
 
 class TriageResult(BaseModel):
     urgency: str
