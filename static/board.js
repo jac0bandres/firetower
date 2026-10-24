@@ -17,6 +17,10 @@ const elements = {
   lastUpdated: document.getElementById("last-updated"),
   emergencyPanel: document.getElementById("emergency-panel"),
   emergencyCards: document.getElementById("emergency-cards"),
+  priorityList: document.getElementById("priority-list"),
+  priorityForm: document.getElementById("priority-form"),
+  priorityNodeId: document.getElementById("priority-node-id"),
+  priorityRole: document.getElementById("priority-role"),
 };
 
 let map;
@@ -26,6 +30,7 @@ let initialFitDone = false;
 let latestTickets = [];
 let lastRenderedTickets = "";
 let mockMode = false;
+let priorityNodes = {};
 
 function coordinates(ticket) {
   const latitude = ticket.latitude;
@@ -158,6 +163,13 @@ function renderRows(tickets) {
       tag.textContent = "keyword raised";
       urgencyCell.append(tag);
     }
+    const priorityRole = priorityNodes[ticket.node_id];
+    if (priorityRole) {
+      const tag = document.createElement("span");
+      tag.className = "small-note priority-tag";
+      tag.textContent = `priority node: ${priorityRole}`;
+      urgencyCell.append(tag);
+    }
     addCell(row, ticket.node_id, "node-id");
     addCell(row, ticket.what_happened || ticket.raw_text || "");
     addCell(row, ticket.location || "Not specified");
@@ -271,7 +283,7 @@ function updateBoard(tickets) {
   syncMarkers(latestTickets);
   renderEmergencyCards(latestTickets);
 
-  const signature = JSON.stringify(latestTickets);
+  const signature = JSON.stringify([latestTickets, priorityNodes]);
   if (signature !== lastRenderedTickets) {
     renderRows(latestTickets);
     lastRenderedTickets = signature;
@@ -279,20 +291,80 @@ function updateBoard(tickets) {
   elements.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
 }
 
+function renderPriorityNodes() {
+  const fragment = document.createDocumentFragment();
+  const entries = Object.entries(priorityNodes).sort(([a], [b]) => a.localeCompare(b));
+  for (const [nodeId, role] of entries) {
+    const item = document.createElement("li");
+    item.className = "priority-item";
+    const label = document.createElement("span");
+    const code = document.createElement("code");
+    code.textContent = nodeId;
+    const roleSpan = document.createElement("span");
+    roleSpan.className = "priority-role";
+    roleSpan.textContent = role;
+    label.append(code, document.createTextNode(" — "), roleSpan);
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "priority-remove";
+    removeButton.textContent = "Remove";
+    removeButton.addEventListener("click", () => removePriorityNode(nodeId));
+
+    item.append(label, removeButton);
+    fragment.append(item);
+  }
+  elements.priorityList.replaceChildren(fragment);
+}
+
+async function addPriorityNode(event) {
+  event.preventDefault();
+  const nodeId = elements.priorityNodeId.value.trim();
+  const role = elements.priorityRole.value.trim();
+  if (!nodeId || !role) return;
+  try {
+    const response = await fetch(
+      `/api/priority_nodes/${encodeURIComponent(nodeId)}?role=${encodeURIComponent(role)}`,
+      { method: "POST" },
+    );
+    if (!response.ok) throw new Error("Could not add priority node");
+    elements.priorityNodeId.value = "";
+    elements.priorityRole.value = "";
+    await poll();
+  } catch (error) {
+    console.error("Add priority node failed", error);
+  }
+}
+
+async function removePriorityNode(nodeId) {
+  try {
+    const response = await fetch(`/api/priority_nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" });
+    if (!response.ok) throw new Error("Could not remove priority node");
+    await poll();
+  } catch (error) {
+    console.error("Remove priority node failed", error);
+  }
+}
+
 async function poll() {
   try {
-    const [statusRes, ticketsRes] = await Promise.all([
+    const [statusRes, ticketsRes, priorityRes] = await Promise.all([
       fetch("/api/status", { cache: "no-store" }),
       fetch("/api/tickets", { cache: "no-store" }),
+      fetch("/api/priority_nodes", { cache: "no-store" }),
     ]);
-    if (!statusRes.ok || !ticketsRes.ok) throw new Error("Board API unavailable");
-    const [status, tickets] = await Promise.all([statusRes.json(), ticketsRes.json()]);
+    if (!statusRes.ok || !ticketsRes.ok || !priorityRes.ok) throw new Error("Board API unavailable");
+    const [status, tickets, priority] = await Promise.all([
+      statusRes.json(), ticketsRes.json(), priorityRes.json(),
+    ]);
     if (!Array.isArray(tickets)) throw new Error("Ticket API returned invalid data");
 
     elements.banner.textContent = status.online ? "ONLINE" : "OFFLINE · LOCAL TRIAGE";
     elements.banner.className = `badge ${status.online ? "badge-online" : "badge-offline"}`;
     mockMode = Boolean(status.mock);
     elements.mockBadge.hidden = !status.mock;
+    priorityNodes = priority && typeof priority === "object" ? priority : {};
+    renderPriorityNodes();
     updateBoard(tickets);
   } catch (error) {
     elements.banner.textContent = "BOARD CONNECTION LOST";
@@ -411,5 +483,6 @@ function startMap() {
 }
 
 elements.fitMap.addEventListener("click", fitLocatedTickets);
+elements.priorityForm.addEventListener("submit", addPriorityNode);
 poll().finally(startMap);
 window.setInterval(poll, POLL_INTERVAL_MS);

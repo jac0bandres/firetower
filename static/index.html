@@ -58,6 +58,22 @@
       </div>
     </section>
 
+    <section class="priority-panel panel" aria-labelledby="priority-heading">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">NEVER UNDER-TRIAGED</p>
+          <h2 id="priority-heading">Priority nodes</h2>
+          <p class="subheading">A message from one of these nodes is never ranked below PRIORITY.</p>
+        </div>
+      </div>
+      <ul id="priority-list" class="priority-list"></ul>
+      <form id="priority-form" class="priority-form">
+        <input id="priority-node-id" type="text" placeholder="Node ID (e.g. !a1b2c3d4)" required />
+        <input id="priority-role" type="text" placeholder="Role (e.g. shelter lead)" required />
+        <button type="submit">Add priority node</button>
+      </form>
+    </section>
+
     <section class="tickets-panel panel" aria-labelledby="tickets-heading">
       <div class="panel-heading">
         <div>

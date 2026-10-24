@@ -89,3 +89,12 @@ def set_priority_node(node_id: str, role: str):
         return {"node_id": node_id, "role": role}
     db.set_priority_node(node_id, role)
     return {"node_id": node_id, "role": role}
+
+
+@app.delete("/api/priority_nodes/{node_id}")
+def remove_priority_node(node_id: str):
+    if MOCK_MODE:
+        _mock_priority_nodes.pop(node_id, None)
+        return {"node_id": node_id, "removed": True}
+    db.remove_priority_node(node_id)
+    return {"node_id": node_id, "removed": True}

@@ -52,8 +52,8 @@ without waiting on the radio pipeline or the model.
 - [x] Build the 911 call card UI: red banner for open `EMERGENCY` tickets, a
       "Prepare 911 call" card with the ready-to-read script, an "I called 911"
       button that `POST`s `/api/tickets/{code}/status=assigned`. Never auto-dials.
-- [ ] Add priority-node toggle UI: let the coordinator mark/unmark a node via
-      `GET`/`POST /api/priority_nodes`, show a "priority node: &lt;role&gt;" tag
+- [x] Add priority-node toggle UI: let the coordinator mark/unmark a node via
+      `GET`/`POST`/`DELETE /api/priority_nodes`, show a "priority node: &lt;role&gt;" tag
       on matching tickets in the table.
 
 ## Stretch (after the above, time permitting)

@@ -172,6 +172,12 @@ def set_priority_node(node_id: str, role: str) -> None:
         conn.commit()
 
 
+def remove_priority_node(node_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM priority_nodes WHERE node_id = ?", (node_id,))
+        conn.commit()
+
+
 def save_node_position(node_id: str, latitude: float, longitude: float,
                        received_at: str, packet_json: str) -> None:
     with connect() as conn:
