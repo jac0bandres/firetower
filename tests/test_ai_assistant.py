@@ -14,12 +14,19 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import db  # noqa: E402
+import router  # noqa: E402
 import ai_assistant  # noqa: E402
 
 
 def make_ollama_response(text: str):
     response = MagicMock()
     response.message.content = text
+    return response
+
+
+def make_openai_response(text: str):
+    response = MagicMock()
+    response.choices = [MagicMock(message=MagicMock(content=text))]
     return response
 
 
@@ -160,6 +167,76 @@ class TestAnswer:
         ai_assistant.answer("!bob", "hi")
 
         assert db.get_or_create_ai_thread("!alice") != db.get_or_create_ai_thread("!bob")
+
+
+class TestCloudTier:
+    def test_unconfigured_cloud_skips_straight_to_local(self, monkeypatch):
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_API_KEY", "")
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_BASE_URL", "")
+        mock_local = MagicMock()
+        mock_local.chat.return_value = make_ollama_response("local answer")
+        monkeypatch.setattr(ai_assistant, "_client", mock_local)
+
+        reply = ai_assistant.answer("!asker", "question")
+
+        assert reply == "local answer"
+
+    def test_configured_and_online_tries_cloud_first(self, monkeypatch):
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_API_KEY", "fake-key")
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_BASE_URL", "https://fake.example/v1")
+        monkeypatch.setattr(router, "is_online", lambda force=False: True)
+        monkeypatch.setattr(ai_assistant, "_call_cloud", lambda messages: "cloud answer")
+        mock_local = MagicMock()
+        monkeypatch.setattr(ai_assistant, "_client", mock_local)
+
+        reply = ai_assistant.answer("!asker", "question")
+
+        assert reply == "cloud answer"
+        mock_local.chat.assert_not_called()
+
+    def test_configured_but_offline_skips_cloud(self, monkeypatch):
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_API_KEY", "fake-key")
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_BASE_URL", "https://fake.example/v1")
+        monkeypatch.setattr(router, "is_online", lambda force=False: False)
+        cloud_call = MagicMock(side_effect=AssertionError("cloud should not be called while offline"))
+        monkeypatch.setattr(ai_assistant, "_call_cloud", cloud_call)
+        mock_local = MagicMock()
+        mock_local.chat.return_value = make_ollama_response("local answer")
+        monkeypatch.setattr(ai_assistant, "_client", mock_local)
+
+        reply = ai_assistant.answer("!asker", "question")
+
+        assert reply == "local answer"
+        cloud_call.assert_not_called()
+
+    def test_cloud_failure_falls_back_to_local(self, monkeypatch):
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_API_KEY", "fake-key")
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_BASE_URL", "https://fake.example/v1")
+        monkeypatch.setattr(router, "is_online", lambda force=False: True)
+        monkeypatch.setattr(
+            ai_assistant, "_call_cloud",
+            MagicMock(side_effect=RuntimeError("cloud unreachable")),
+        )
+        mock_local = MagicMock()
+        mock_local.chat.return_value = make_ollama_response("local answer")
+        monkeypatch.setattr(ai_assistant, "_client", mock_local)
+
+        reply = ai_assistant.answer("!asker", "question")
+
+        assert reply == "local answer"
+
+    def test_call_cloud_uses_openai_compatible_client(self, monkeypatch):
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_API_KEY", "fake-key")
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_BASE_URL", "https://fake.example/v1")
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = make_openai_response("hi from the cloud")
+        monkeypatch.setattr(ai_assistant, "_cloud_client", lambda: mock_client)
+
+        result = ai_assistant._call_cloud([{"role": "user", "content": "hi"}])
+
+        assert result == "hi from the cloud"
+        mock_client.chat.completions.create.assert_called_once()
+        assert mock_client.chat.completions.create.call_args.kwargs["model"] == ai_assistant.DIGITALOCEAN_MODEL
 
 
 if __name__ == "__main__":

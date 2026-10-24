@@ -79,9 +79,29 @@ without waiting on the radio pipeline or the model.
       a new one. Verified live against the real model and a real SQLite DB,
       not just mocked. `tests/test_gateway_clarification.py` (6 tests).
 
+- [x] DigitalOcean-primary / local-fallback scaffolding for `!ai`: tier order
+      is DigitalOcean (if `DIGITALOCEAN_API_KEY`+`DIGITALOCEAN_BASE_URL` set
+      and online) → `qwen3:4b` → `llama3.2:3b`. `triage.py` is explicitly
+      untouched — stays local-only, since that's the offline-resilience
+      claim the whole project rests on. Inert with blank credentials
+      (verified: identical behavior to before, live against the real local
+      model). `DIGITALOCEAN_BASE_URL` still needs filling in once that
+      credential exists. `tests/test_ai_assistant.py::TestCloudTier` (5 tests).
+- [x] Snowflake RAG scaffolding (`snowflake_rag.py`): `is_configured()` +
+      `query_context()` exist and are tested, but **not wired into**
+      `ai_assistant.build_channel_context()` yet — on purpose, per explicit
+      instruction not to actually use it until credentials + the real
+      Cortex Search/vector query are ready. `query_context()` raises
+      `NotImplementedError` once configured, so it's obvious this still
+      needs filling in rather than silently no-op'ing.
+      `tests/test_snowflake_rag.py` (5 tests).
+
 ## Stretch (after the above, time permitting)
 
 - [ ] Hop count + traceroute button (`CLAUDE.md` §7 in handoff)
 - [ ] Snowflake sync (`sync.py`) + Cortex queries
+- [ ] Wire snowflake_rag.query_context() into ai_assistant's context once
+      Snowflake credentials + the Cortex Search query are ready
+- [ ] Fill in DIGITALOCEAN_API_KEY/DIGITALOCEAN_BASE_URL once available
 - [ ] TAK markers over UDP multicast
 - [ ] Voice read-aloud (ElevenLabs online / Piper offline) for the 911 card

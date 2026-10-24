@@ -92,7 +92,8 @@ priority-node floor into the final `TriageResult`.
 
 | Job | Internet up | Internet down |
 |---|---|---|
-| Triage + extraction | `qwen3:4b` on the laptop (Ollama) | same |
+| Triage + extraction | `qwen3:4b` on the laptop (Ollama) — **always local, never DigitalOcean** | same |
+| `!ai` assistant | DigitalOcean serverless model if configured (`DIGITALOCEAN_API_KEY`+`DIGITALOCEAN_BASE_URL`), else `qwen3:4b` | `qwen3:4b` on the laptop |
 | SITREP summaries | DigitalOcean serverless open-weight model, home GPU over Tailscale as backup | `qwen3:4b` on the laptop |
 | Reports | synced to Snowflake | saved locally, queued |
 | Read-aloud voice | ElevenLabs | Piper |
@@ -100,6 +101,9 @@ priority-node floor into the final `TriageResult`.
 - Backup local model: `llama3.2:3b`.
 - Turn qwen3 "thinking" off (`"think": false`, or `/no_think` in the prompt). Temperature 0 for triage.
 - The home-GPU tier still needs internet (Tailscale) — it only protects against a provider outage, not a real offline scenario.
+- **`triage.py` never calls DigitalOcean, by design** — it's the one path that has to work completely offline, which is the project's core claim. Only `ai_assistant.py`'s `!ai` handler and the (not-yet-implemented) SITREP generator are allowed to prefer the cloud tier.
+- `ai_assistant.py`'s tier order: DigitalOcean (only if both `DIGITALOCEAN_API_KEY` and `DIGITALOCEAN_BASE_URL` are set *and* `router.is_online()`) → `TRIAGE_MODEL` → `TRIAGE_MODEL_BACKUP`. With no DigitalOcean credentials (the default), behavior is identical to before this tier existed. Uses the `openai` package against DigitalOcean's OpenAI-compatible inference API — `DIGITALOCEAN_BASE_URL` isn't filled in yet, fill it in from the DigitalOcean GenAI/serverless inference dashboard when that credential is available.
+- **Snowflake RAG (`snowflake_rag.py`) is scaffolded but not wired in.** `is_configured()`/`query_context()` exist and are tested, but `ai_assistant.build_channel_context()` still only reads local SQLite — it does not call `snowflake_rag` yet. `query_context()` raises `NotImplementedError` once credentials are present, by design, so it's obvious when someone needs to fill in the actual Cortex Search/vector query rather than it silently doing nothing.
 
 ## SQLite schema (`db.py`)
 
