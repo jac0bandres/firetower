@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS tickets (
     location TEXT,
     what_happened TEXT,
     injured_count INTEGER,
+    clarification_question TEXT,
+    clarification_response TEXT,
     raised_by_keyword INTEGER NOT NULL DEFAULT 0,
     priority_floor_applied INTEGER NOT NULL DEFAULT 0,
     hop_count INTEGER,
@@ -103,6 +105,8 @@ def init_db():
             ("position_received_at", "TEXT"),
             ("position_packet_json", "TEXT"),
             ("meshtastic_packet_json", "TEXT"),
+            ("clarification_question", "TEXT"),
+            ("clarification_response", "TEXT"),
         ):
             if name not in existing:
                 conn.execute(f"ALTER TABLE tickets ADD COLUMN {name} {column_type}")
@@ -143,6 +147,7 @@ def insert_ticket(ticket: dict) -> str:
         "raised_by_keyword", "priority_floor_applied", "hop_count",
         "latitude", "longitude", "position_received_at", "position_packet_json",
         "meshtastic_packet_json",
+        "clarification_question", "clarification_response",
     )
     with connect() as conn:
         conn.execute(
@@ -216,6 +221,18 @@ def save_node_position(node_id: str, latitude: float, longitude: float,
             "received_at = excluded.received_at, meshtastic_packet_json = excluded.meshtastic_packet_json "
             "WHERE excluded.received_at >= node_positions.received_at",
             (node_id, latitude, longitude, received_at, packet_json),
+        )
+        conn.commit()
+
+
+def attach_ticket_position(node_id: str, packet_id: str, latitude: float,
+                           longitude: float, received_at: str, packet_json: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tickets SET latitude = ?, longitude = ?, "
+            "position_received_at = ?, position_packet_json = ? "
+            "WHERE node_id = ? AND packet_id = ? AND latitude IS NULL AND longitude IS NULL",
+            (latitude, longitude, received_at, packet_json, node_id, packet_id),
         )
         conn.commit()
 
@@ -319,7 +336,10 @@ def upsert_person(node_id: str, display_name: str | None = None,
 
 
 def update_ticket_fields(ticket_code: str, **fields) -> None:
-    allowed = {"location", "injured_count", "what_happened"}
+    allowed = {
+        "location", "injured_count", "what_happened",
+        "clarification_question", "clarification_response",
+    }
     updates = {key: value for key, value in fields.items() if key in allowed}
     if not updates:
         return

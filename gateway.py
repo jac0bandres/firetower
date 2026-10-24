@@ -6,8 +6,10 @@ starting with our own gateway name (our ack prefix, see GATEWAY_NAME),
 and only listens on our private channel + PSK.
 """
 
+import json
 import logging
 import os
+import re
 import time
 
 import meshtastic
@@ -127,6 +129,7 @@ def on_receive(packet, interface):
     if pending is not None:
         db.mark_packet_seen(dedupe_key)
         db.clear_pending_clarification(sender)
+        db.update_ticket_fields(pending["ticket_code"], clarification_response=message)
         extraction = triage.extract_with_model(message)
         updates = {}
         if "location" in pending["missing_fields"] and extraction.location:
@@ -139,7 +142,20 @@ def on_receive(packet, interface):
                 db.upsert_person(sender, last_known_address=updates["location"])
             logger.info("Updated ticket %s from clarification by %s: %s",
                         pending["ticket_code"], sender, updates)
-        note = "thanks, updated" if updates else "thanks, noted"
+        with db.connect() as connection:
+            ticket = connection.execute(
+                "SELECT urgency FROM tickets WHERE ticket_code = ?", (pending["ticket_code"],)
+            ).fetchone()
+        recorded = []
+        if "location" in updates:
+            recorded.append(f"location: {updates['location']}")
+        if "injured_count" in updates:
+            recorded.append(f"injured: {updates['injured_count']}")
+        note = (
+            f"Updated: {'; '.join(recorded)}. " if recorded else
+            "Reply saved; location/injury fields unchanged. "
+        )
+        note += f"{ticket['urgency']}; queued for coordinator review."
         try:
             send_ticket_note(sender, pending["ticket_code"], note, interface, channel)
         except Exception:
@@ -182,7 +198,7 @@ def on_receive(packet, interface):
     db.mark_packet_seen(dedupe_key)
     logger.info("Stored ticket %s from %s at urgency %s", ticket_code, sender, result.urgency)
     try:
-        send_ack(sender, ticket_code, interface, channel)
+        send_ack(sender, ticket_code, interface, channel, result=result)
     except Exception:
         logger.exception("Ticket %s stored, but acknowledgment to %s failed", ticket_code, sender)
 
@@ -190,14 +206,15 @@ def on_receive(packet, interface):
         missing = _missing_fields(result)
         if missing:
             db.set_pending_clarification(sender, ticket_code, missing)
+            question = _ai_clarification_question(missing, message)
+            db.update_ticket_fields(ticket_code, clarification_question=question)
             # Give the ack time to actually transmit before sending the next
             # message — two RELIABLE sends back-to-back risk a collision on
             # the half-duplex radio (confirmed live: the ack got delivered,
             # the immediately-following clarification question did not).
             time.sleep(CLARIFICATION_SEND_DELAY_SECONDS)
             try:
-                send_ticket_note(sender, ticket_code, _ai_clarification_question(missing, message),
-                                  interface, channel)
+                send_ticket_note(sender, ticket_code, question, interface, channel)
             except Exception:
                 logger.exception("Clarification question to %s failed", sender)
 
@@ -229,17 +246,44 @@ def _ai_clarification_question(missing_fields: list[str], raw_text: str) -> str:
     prompt = (
         f'A field radio report said: "{raw_text}". It is missing: {fields_desc}. '
         "Write ONE short question (under 80 characters) asking only for that "
-        "missing information, to send back over a slow radio link. Output only "
-        "the question itself, no preamble."
+        "missing information, to send back over a slow radio link. Return only "
+        'a JSON object with a "question" string, without reasoning or preamble.'
     )
     try:
         response = triage._client.chat(
             model=triage.TRIAGE_MODEL, messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.3}, think=False,
+            format={
+                "type": "object",
+                "properties": {"question": {"type": "string"}},
+                "required": ["question"],
+                "additionalProperties": False,
+            },
+            options={"temperature": 0}, think=False,
         )
         content = response.message.content
-        question = (content.split("</think>")[-1] if "</think>" in content else content).strip()
-        return question or fallback
+        if not isinstance(content, str) or re.search(r"</?think\b", content, re.I):
+            return fallback
+        payload = json.loads(content)
+        if not isinstance(payload, dict) or set(payload) != {"question"}:
+            return fallback
+        if not isinstance(payload["question"], str):
+            return fallback
+        question = payload["question"].strip()
+        if (
+            not question or len(question) >= 80 or not question.endswith("?")
+            or question.count("?") != 1 or not question.isascii()
+            or any(ord(character) < 32 or ord(character) == 127 for character in question)
+        ):
+            return fallback
+        asks_location = re.search(r"\b(where|location|address|landmark|intersection)\b", question, re.I)
+        asks_count = re.search(
+            r"\b(how many|number of)\b[^?]*\b(injur\w*|hurt|wounded)\b", question, re.I
+        )
+        if "location" in missing_fields and not asks_location:
+            return fallback
+        if "injured_count" in missing_fields and not asks_count:
+            return fallback
+        return question
     except Exception:
         logger.warning("AI clarification question generation failed, using template", exc_info=True)
         return fallback
@@ -268,16 +312,23 @@ def on_simulator_position(packet, interface):
         return
     coordinates = packets.simulator_position(packet)
     if coordinates:
+        received_at = packets.received_at(packet)
+        packet_json = packets.packet_json(packet)
         db.save_node_position(
-            sender, *coordinates, packets.received_at(packet), packets.packet_json(packet)
+            sender, *coordinates, received_at, packet_json
         )
+        reply_id = packet.get("decoded", {}).get("replyId")
+        if reply_id is not None:
+            db.attach_ticket_position(sender, str(reply_id), *coordinates, received_at, packet_json)
     name = packets.simulator_name(packet)
     if name:
         db.upsert_person(sender, display_name=name)
 
 
-def send_ack(node_id: str, ticket_code: str, interface, channel_index: int = CHANNEL_INDEX) -> None:
-    message = f"{GATEWAY_NAME} {ticket_code} received"
+def send_ack(node_id: str, ticket_code: str, interface, channel_index: int = CHANNEL_INDEX,
+             result=None) -> None:
+    urgency = f"; {result.urgency}" if result is not None else ""
+    message = f"{GATEWAY_NAME} {ticket_code} received{urgency}; queued for coordinator review."
     encoded = message.encode("utf-8")
     if len(encoded) > MAX_CHUNK_BYTES:
         raise ValueError("Acknowledgment exceeds the Meshtastic payload limit")

@@ -63,6 +63,31 @@ python gateway.py            # gateway (needs a Meshtastic node on USB)
 The board defaults to the real SQLite database (`FIRETOWER_MOCK=0`). Use
 `FIRETOWER_MOCK=1` to preview the synthetic tickets and map positions.
 
+Emergency and priority tickets with missing location or injury counts trigger
+one follow-up question, phrased by the local model with a static fallback.
+The ticket's nullable `clarification_question` and `clarification_response`
+fields preserve the original question and sender's raw reply for the
+coordinator board, alongside the extracted details. They are included in the
+ticket API and mock fixtures. `db.init_db()` safely adds these columns to an
+existing database, leaving historical tickets with null values.
+
+`!ai <question>` answers from the sender's conversation and channel records,
+including full-channel counts by urgency/status and the 40 most recent detailed
+tickets with status, timestamps and clarification exchanges. Zero injuries is
+kept distinct from an unknown count; replies are prompted to cite specific
+ticket details and identify missing facts.
+
+Local `!ai` replies use Ollama's JSON `format` schema `{"reply": string}`
+with `think=False` and temperature 0.2. Replies are JSON-parsed and checked for
+a string `reply`, with reasoning text stripped before retrying failed parsing;
+invalid or empty answers fall back through the model tiers to a fixed
+unavailable message. Clarification questions use `{"question": string}` with
+`think=False` and temperature 0. Strict JSON and question validation reject
+reasoning text, extra fields, invalid characters, questions of 80 or more
+characters, and wording that fails to ask for the missing details; failures
+use the static question template. The optional cloud assistant uses plain-text
+chat responses.
+
 The gateway listens for Meshtastic `TEXT_MESSAGE_APP` and `POSITION_APP` packets
 on `FIRETOWER_CHANNEL_INDEX`. Configure that channel with a private PSK on the
 radios. The gateway exits at startup if that channel is missing, disabled, or
@@ -70,6 +95,15 @@ uses the unencrypted/public default key. Tickets retain a JSON snapshot of the
 text packet and, when a position packet from the same node was received within
 30 minutes, its coordinates and position packet. Tickets without a recent
 position have null coordinates.
+
+Receipt timestamps use the gateway laptop's UTC clock, so a radio clock that
+lags the laptop does not make newly received GPS appear stale. The radio's
+original `rxTime` remains in the JSON packet snapshots. Simulator GPS arriving
+after a text report can attach to that ticket when `decoded.replyId` explicitly
+references its text packet ID. The update requires the same sender and exact
+packet ID and both ticket coordinates to be null; existing positions are
+preserved, and older tickets are never broadly backfilled.
+
 `fixtures/mock_meshtastic_packets.json` contains synthetic Meshtastic position
 and text packets for local development; they are not captured radio
 transmissions. Mock GPS positions are clustered in North Georgia and exist only

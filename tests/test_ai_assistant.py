@@ -20,7 +20,7 @@ import ai_assistant  # noqa: E402
 
 def make_ollama_response(text: str):
     response = MagicMock()
-    response.message.content = text
+    response.message.content = json.dumps({"reply": text})
     return response
 
 
@@ -88,6 +88,31 @@ class TestBuildChannelContext:
         assert "FT-0004" in context
         assert "FT-0000" not in context
 
+    def test_context_preserves_zero_unknown_status_and_original_report(self):
+        insert_sample_ticket()
+        insert_sample_ticket(ticket_code="FT-0002", packet_id="2", injured_count=None)
+        db.set_ticket_status("FT-0001", "closed")
+
+        context = ai_assistant.build_channel_context()
+
+        assert "injured_count=0" in context
+        assert "injured_count=unknown" in context
+        assert "status=closed" in context
+        assert "received=2026-10-24T14:00:00Z" in context
+        assert "report=fire at camp" in context
+        assert "summary=Campfire spreading" in context
+
+    def test_totals_include_tickets_outside_recent_context(self, monkeypatch):
+        monkeypatch.setattr(ai_assistant, "CONTEXT_TICKET_LIMIT", 1)
+        insert_sample_ticket()
+        insert_sample_ticket(ticket_code="FT-0002", packet_id="2", urgency="PRIORITY")
+
+        context = ai_assistant.build_channel_context()
+
+        assert "all 2 tickets" in context
+        assert "open: EMERGENCY=1, PRIORITY=1" in context
+        assert context.count("FT-") == 1
+
 
 class TestAnswer:
     def test_uses_primary_model_and_persists_thread(self, monkeypatch):
@@ -103,6 +128,8 @@ class TestAnswer:
         assert [h["role"] for h in history] == ["user", "assistant"]
         assert history[0]["content"] == "how many open emergencies?"
         assert history[1]["content"] == "Two open emergencies."
+        assert "The asking radio node is !asker" in mock_client.chat.call_args.kwargs["messages"][0]["content"]
+        assert mock_client.chat.call_args.kwargs["format"] == ai_assistant.REPLY_SCHEMA
 
     def test_second_question_continues_same_thread(self, monkeypatch):
         mock_client = MagicMock()
@@ -145,6 +172,46 @@ class TestAnswer:
 
         assert reply == "Backup answer."
         assert mock_client.chat.call_count == 2
+
+    def test_empty_primary_answer_tries_backup(self, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = [
+            make_ollama_response("reasoning</think>   "),
+            make_ollama_response("FT-0001 is open at Camp Road."),
+        ]
+        monkeypatch.setattr(ai_assistant, "_client", mock_client)
+
+        reply = ai_assistant.answer("!asker", "where is my report?")
+
+        assert reply == "FT-0001 is open at Camp Road."
+        assert mock_client.chat.call_count == 2
+
+    def test_unclosed_thinking_is_never_returned(self, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = [
+            make_ollama_response("<think>I should work out the situation"),
+            make_ollama_response("FT-0001 is open at Camp Road."),
+        ]
+        monkeypatch.setattr(ai_assistant, "_client", mock_client)
+
+        assert ai_assistant.answer("!asker", "where?") == "FT-0001 is open at Camp Road."
+
+    def test_unstructured_local_reasoning_tries_backup(self, monkeypatch):
+        mock_client = MagicMock()
+        malformed = MagicMock()
+        malformed.message.content = "I need to reason about the reports before answering."
+        mock_client.chat.side_effect = [malformed, make_ollama_response("No location reported.")]
+        monkeypatch.setattr(ai_assistant, "_client", mock_client)
+
+        assert ai_assistant.answer("!asker", "where?") == "No location reported."
+
+    def test_cloud_thinking_tags_are_stripped(self, monkeypatch):
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_API_KEY", "fake-key")
+        monkeypatch.setattr(ai_assistant, "DIGITALOCEAN_BASE_URL", "https://fake.example/v1")
+        monkeypatch.setattr(router, "is_online", lambda force=False: True)
+        monkeypatch.setattr(ai_assistant, "_call_cloud", lambda messages: "<THINK>internal</THINK>FT-0001 is open.")
+
+        assert ai_assistant.answer("!asker", "status?") == "FT-0001 is open."
 
     def test_degrades_when_both_models_fail(self, monkeypatch):
         mock_client = MagicMock()

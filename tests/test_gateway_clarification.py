@@ -3,6 +3,7 @@ EMERGENCY/PRIORITY ticket missing location or injured_count triggers a
 follow-up DM, and the sender's next plain-text reply updates that same
 ticket instead of creating a new one."""
 
+import json
 import sys
 import tempfile
 import unittest
@@ -70,6 +71,8 @@ class ClarificationTests(unittest.TestCase):
         ack_text, _ = self.interface.sent[0]
         question_text, kwargs = self.interface.sent[1]
         self.assertTrue(ack_text.startswith(f"{gateway.GATEWAY_NAME} FT-0001 received"))
+        self.assertIn("EMERGENCY; queued for coordinator review", ack_text)
+        self.assertNotIn("dispatch", ack_text.lower())
         self.assertIn("location", question_text.lower())
         self.assertIn("hurt", question_text.lower())
         self.assertEqual(kwargs["destinationId"], self.sender)
@@ -79,6 +82,9 @@ class ClarificationTests(unittest.TestCase):
         pending = db.get_pending_clarification(self.sender)
         self.assertEqual(pending["ticket_code"], "FT-0001")
         self.assertEqual(set(pending["missing_fields"]), {"location", "injured_count"})
+        self.assertEqual(db.list_tickets()[0]["clarification_question"],
+                         gateway._clarification_question(["location", "injured_count"]))
+        self.assertIsNone(db.list_tickets()[0]["clarification_response"])
 
     def test_emergency_with_all_fields_asks_nothing(self):
         with patch.object(triage, "triage", return_value=TriageResult(
@@ -110,6 +116,11 @@ class ClarificationTests(unittest.TestCase):
         # ack, question, confirmation
         self.assertEqual(len(self.interface.sent), 3)
         self.assertIn("updated", self.interface.sent[2][0].lower())
+        self.assertIn("location: Behind the old mill; injured: 3", self.interface.sent[2][0])
+        self.assertIn("EMERGENCY; queued for coordinator review", self.interface.sent[2][0])
+        self.assertEqual(tickets[0]["clarification_response"], "behind the old mill, 3 hurt")
+        self.assertEqual(tickets[0]["clarification_question"],
+                         gateway._clarification_question(["location", "injured_count"]))
 
     def test_reply_with_no_new_info_still_clears_pending(self):
         with patch.object(triage, "triage", return_value=TriageResult(urgency="EMERGENCY")):
@@ -119,7 +130,57 @@ class ClarificationTests(unittest.TestCase):
             gateway.on_receive(self.make_packet("not sure, hard to tell", packet_id=2), self.interface)
 
         self.assertIsNone(db.get_pending_clarification(self.sender))
-        self.assertIn("noted", self.interface.sent[-1][0].lower())
+        self.assertIn("Reply saved; location/injury fields unchanged", self.interface.sent[-1][0])
+        ticket = db.list_tickets()[0]
+        self.assertEqual(ticket["clarification_response"], "not sure, hard to tell")
+        self.assertIsNone(ticket["location"])
+        self.assertIsNone(ticket["injured_count"])
+        self.assertTrue(ticket["clarification_question"])
+
+    def test_question_is_saved_before_failed_send(self):
+        def fail_question(node_id, ticket_code, note, interface, channel):
+            self.assertEqual(db.list_tickets()[0]["clarification_question"], note)
+            raise RuntimeError("radio unavailable")
+
+        with patch.object(triage, "triage", return_value=TriageResult(urgency="PRIORITY")), \
+                patch.object(gateway, "send_ticket_note", side_effect=fail_question):
+            gateway.on_receive(self.make_packet("need help"), self.interface)
+
+        self.assertTrue(db.list_tickets()[0]["clarification_question"])
+        self.assertIsNotNone(db.get_pending_clarification(self.sender))
+
+    def test_reply_only_updates_missing_fields_and_confirms_zero_injured(self):
+        with patch.object(triage, "triage", return_value=TriageResult(
+                urgency="PRIORITY", location="School")):
+            gateway.on_receive(self.make_packet("need help", packet_id=1), self.interface)
+
+        with patch.object(triage, "extract_with_model", return_value=TriageResult(
+                urgency="ROUTINE", location="Elsewhere", injured_count=0)):
+            gateway.on_receive(self.make_packet("nobody hurt", packet_id=2), self.interface)
+
+        ticket = db.list_tickets()[0]
+        self.assertEqual(ticket["location"], "School")
+        self.assertEqual(ticket["injured_count"], 0)
+        self.assertIn("Updated: injured: 0. PRIORITY", self.interface.sent[-1][0])
+        self.assertNotIn("Elsewhere", self.interface.sent[-1][0])
+
+    def test_long_confirmation_stays_within_dm_byte_and_chunk_limits(self):
+        with patch.object(triage, "triage", return_value=TriageResult(urgency="EMERGENCY")):
+            gateway.on_receive(self.make_packet("help", packet_id=1), self.interface)
+        self.interface.sent.clear()
+
+        with patch.object(triage, "extract_with_model", return_value=TriageResult(
+                urgency="EMERGENCY", location="Long road " * 120, injured_count=2)):
+            gateway.on_receive(self.make_packet("details", packet_id=2), self.interface)
+
+        self.assertLessEqual(len(self.interface.sent), gateway.AI_MAX_CHUNKS)
+        for text, kwargs in self.interface.sent:
+            self.assertLessEqual(len(text.encode("utf-8")), gateway.MAX_CHUNK_BYTES)
+            self.assertEqual(kwargs, {"destinationId": self.sender, "channelIndex": 0})
+
+    def test_direct_ack_without_result_still_queues_for_review(self):
+        gateway.send_ack(self.sender, "FT-0001", self.interface)
+        self.assertIn("queued for coordinator review", self.interface.sent[0][0])
 
     def test_ai_command_takes_precedence_over_pending_clarification(self):
         with patch.object(triage, "triage", return_value=TriageResult(urgency="EMERGENCY")):
@@ -139,17 +200,55 @@ class AiClarificationQuestionTests(unittest.TestCase):
     tests above (for speed/determinism); this tests its own AI/fallback
     behavior directly, same pattern as ai_assistant's model fallback tests."""
 
-    def make_response(self, text):
+    def make_response(self, text, raw=False):
         from unittest.mock import MagicMock
         response = MagicMock()
-        response.message.content = text
+        response.message.content = text if raw else json.dumps({"question": text})
         return response
 
     def test_uses_ai_generated_question_when_available(self):
         with patch.object(triage._client, "chat", return_value=self.make_response(
+                "How many people are injured near the gas leak?")) as chat:
+            question = gateway._ai_clarification_question(["injured_count"], "gas leak in house")
+        self.assertEqual(question, "How many people are injured near the gas leak?")
+        self.assertEqual(chat.call_args.kwargs["options"], {"temperature": 0})
+        self.assertIs(chat.call_args.kwargs["think"], False)
+        self.assertEqual(chat.call_args.kwargs["format"], {
+            "type": "object",
+            "properties": {"question": {"type": "string"}},
+            "required": ["question"],
+            "additionalProperties": False,
+        })
+
+    def test_rejects_question_that_does_not_ask_for_missing_count(self):
+        with patch.object(triage._client, "chat", return_value=self.make_response(
                 "How bad is the gas smell?")):
             question = gateway._ai_clarification_question(["injured_count"], "gas leak in house")
-        self.assertEqual(question, "How bad is the gas smell?")
+        self.assertEqual(question, gateway._clarification_question(["injured_count"]))
+
+    def test_requires_every_missing_field(self):
+        for text in ["Where are you?", "How many are hurt?", "How many supplies at your location?"]:
+            with self.subTest(text=text), patch.object(
+                    triage._client, "chat", return_value=self.make_response(text)):
+                question = gateway._ai_clarification_question(["location", "injured_count"], "help")
+                self.assertEqual(question, gateway._clarification_question(["location", "injured_count"]))
+
+    def test_accepts_specific_location_and_injury_questions(self):
+        for text in ["Where are you and how many people are hurt?",
+                     "What address and number of injured people?",
+                     "Which landmark or intersection, and how many are injured?"]:
+            with self.subTest(text=text), patch.object(
+                    triage._client, "chat", return_value=self.make_response(text)):
+                self.assertEqual(gateway._ai_clarification_question(
+                    ["location", "injured_count"], "help"), text)
+
+    def test_rejects_oversized_or_invalid_questions(self):
+        for text in ["Where " + "exactly " * 20 + "are you?", "Where are you", None,
+                     "Where are you? What happened?", "Where\nare you?", "Where are you? 🚒"]:
+            with self.subTest(text=text), patch.object(
+                    triage._client, "chat", return_value=self.make_response(text)):
+                self.assertEqual(gateway._ai_clarification_question(["location"], "help"),
+                                 gateway._clarification_question(["location"]))
 
     def test_falls_back_to_template_when_model_fails(self):
         with patch.object(triage._client, "chat", side_effect=RuntimeError("down")):
@@ -161,11 +260,30 @@ class AiClarificationQuestionTests(unittest.TestCase):
             question = gateway._ai_clarification_question(["injured_count"], "help")
         self.assertEqual(question, gateway._clarification_question(["injured_count"]))
 
-    def test_strips_leaked_thinking_trace(self):
-        with patch.object(triage._client, "chat", return_value=self.make_response(
-                "Reasoning about this...</think>\n\nHow many are hurt?")):
-            question = gateway._ai_clarification_question(["injured_count"], "help")
-        self.assertEqual(question, "How many are hurt?")
+    def test_rejects_prose_and_malformed_json(self):
+        valid = json.dumps({"question": "How many people are hurt near the fire?"})
+        for content in ["How many are hurt?", "Reasoning first " + valid,
+                        valid + " Extra prose", "```json\n" + valid + "\n```",
+                        '{"question": "How many are hurt?"', "[]", "null",
+                        '{"question": false}', '{"question": "How many are hurt?", "reasoning": "x"}',
+                        '{}', None]:
+            with self.subTest(content=content), patch.object(
+                    triage._client, "chat", return_value=self.make_response(content, raw=True)):
+                self.assertEqual(gateway._ai_clarification_question(["injured_count"], "help"),
+                                 gateway._clarification_question(["injured_count"]))
+
+    def test_rejects_completed_and_unfinished_reasoning_traces(self):
+        valid = json.dumps({"question": "How many people are hurt near the fire?"})
+        for content in ["<think>Considering the report " + valid,
+                        "<think>Reasoning</think>" + valid,
+                        "Reasoning about this...</think>" + valid,
+                        "<THINK>How many people are hurt?",
+                        json.dumps({"question": "<think>How many people are hurt?"}),
+                        json.dumps({"question": "How many are hurt?</think>"})]:
+            with self.subTest(content=content), patch.object(
+                    triage._client, "chat", return_value=self.make_response(content, raw=True)):
+                self.assertEqual(gateway._ai_clarification_question(["injured_count"], "help"),
+                                 gateway._clarification_question(["injured_count"]))
 
 
 if __name__ == "__main__":

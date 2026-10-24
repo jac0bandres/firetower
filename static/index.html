@@ -3,101 +3,149 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Firetower — Coordinator Board</title>
+  <title>Firetower</title>
   <link rel="stylesheet" href="/static/vendor/maplibre-gl.css" />
   <link rel="stylesheet" href="/static/board.css" />
 </head>
 <body>
   <header class="app-header">
-    <div>
-      <p class="eyebrow">MESHTASTIC COORDINATOR BOARD</p>
-      <h1>Firetower</h1>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Firetower</h1>
+        <p class="brand-sub">Mesh coordinator board</p>
+      </div>
+    </div>
+    <div class="incident-clock" aria-label="Incident clock">
+      <div><small>Local</small><strong id="clock-local">--:--:--</strong></div>
+      <div><small>UTC</small><strong id="clock-utc">--:--Z</strong></div>
+      <div><small>Since first report</small><strong id="clock-elapsed">T+ --:--</strong></div>
     </div>
     <div class="header-status">
-      <span id="mock-badge" class="badge badge-demo" hidden>DEMO DATA</span>
-      <span id="banner" class="badge badge-checking" role="status">CHECKING LINK</span>
+      <span id="mock-badge" class="pill pill-demo" hidden>Demo data</span>
+      <div id="link-status" class="link-status is-checking" role="status">
+        <span class="link-dot" aria-hidden="true"></span>
+        <span>
+          <strong id="link-label">Checking link</strong>
+          <small id="link-detail">Triage always runs on this laptop</small>
+        </span>
+      </div>
+      <span id="last-updated" class="last-updated">Connecting…</span>
     </div>
   </header>
 
-  <main class="dashboard">
-    <section id="emergency-panel" class="emergency-panel" aria-labelledby="emergency-heading" aria-live="polite" hidden>
+  <main class="board">
+    <section class="summary" aria-label="Open tickets by urgency">
+      <button type="button" class="stat stat-emergency" data-urgency="EMERGENCY" aria-pressed="false">
+        <span class="stat-count" id="count-EMERGENCY">0</span><span class="stat-label">Emergency</span>
+      </button>
+      <button type="button" class="stat stat-priority" data-urgency="PRIORITY" aria-pressed="false">
+        <span class="stat-count" id="count-PRIORITY">0</span><span class="stat-label">Priority</span>
+      </button>
+      <button type="button" class="stat stat-welfare" data-urgency="WELFARE" aria-pressed="false">
+        <span class="stat-count" id="count-WELFARE">0</span><span class="stat-label">Welfare</span>
+      </button>
+      <button type="button" class="stat stat-routine" data-urgency="ROUTINE" aria-pressed="false">
+        <span class="stat-count" id="count-ROUTINE">0</span><span class="stat-label">Routine</span>
+      </button>
+      <div class="stat stat-meta">
+        <span class="stat-count" id="count-hurt">0</span><span class="stat-label">Reported hurt</span>
+      </div>
+      <div class="stat stat-meta">
+        <span class="stat-count" id="count-oldest">—</span><span class="stat-label">Oldest open</span>
+      </div>
+    </section>
+
+    <section id="emergency-panel" class="emergency-panel" aria-labelledby="emergency-heading" hidden>
       <div class="emergency-banner">
         <span class="emergency-mark" aria-hidden="true">!</span>
         <div>
-          <p class="eyebrow">ACTION REQUIRED</p>
-          <h2 id="emergency-heading">Open emergency tickets</h2>
-          <p>Call emergency services yourself. Firetower never places calls.</p>
+          <h2 id="emergency-heading">0 emergency reports waiting for a 911 decision</h2>
+          <p>Oldest first. Read the script to the dispatcher yourself. Firetower never places calls.</p>
         </div>
       </div>
-      <div id="emergency-cards" class="emergency-cards"></div>
+      <div id="emergency-cards" class="emergency-cards" aria-live="polite"></div>
     </section>
 
-    <section class="map-panel panel" aria-labelledby="map-heading">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">FIELD VIEW</p>
-          <h2 id="map-heading">Topographic map</h2>
-          <p class="subheading">Pins show sender radio positions. An incident may be elsewhere.</p>
+    <div class="workspace">
+      <section class="queue panel" aria-labelledby="queue-heading">
+        <div class="panel-heading">
+          <h2 id="queue-heading">Queue <span id="ticket-count" class="count">0</span></h2>
+          <div class="queue-tools">
+            <div class="segmented" role="group" aria-label="Filter by status">
+              <button type="button" data-status="active" aria-pressed="true">Active</button>
+              <button type="button" data-status="open" aria-pressed="false">Open</button>
+              <button type="button" data-status="closed" aria-pressed="false">Closed</button>
+              <button type="button" data-status="all" aria-pressed="false">All</button>
+            </div>
+            <label class="search">
+              <span class="visually-hidden">Search tickets, follow-up questions and sender replies</span>
+              <input id="search" type="search" placeholder="Search  /" autocomplete="off" />
+            </label>
+          </div>
         </div>
-        <button id="fit-map" type="button" disabled>Fit located tickets</button>
-      </div>
-      <div class="map-frame">
-        <div id="map" aria-label="Map of tickets with known sender positions"></div>
-        <div id="map-message" class="map-message" role="status">Loading map…</div>
-        <div id="map-empty" class="map-empty" role="status" hidden></div>
-        <div class="map-legend" aria-label="Ticket urgency legend">
-          <span><i class="legend-dot emergency"></i>Emergency</span>
-          <span><i class="legend-dot priority"></i>Priority</span>
-          <span><i class="legend-dot welfare"></i>Welfare</span>
-          <span><i class="legend-dot routine"></i>Routine</span>
-        </div>
-      </div>
-      <div class="map-footer">
-        <span id="map-summary">Waiting for tickets…</span>
-        <span class="map-source">OpenFreeMap · Mapterhorn terrain</span>
-      </div>
-    </section>
+        <div id="filter-note" class="filter-note" hidden></div>
+        <ol id="ticket-list" class="ticket-list" aria-live="polite"></ol>
+        <p id="queue-empty" class="queue-empty" hidden></p>
+      </section>
 
-    <section class="priority-panel panel" aria-labelledby="priority-heading">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">NEVER UNDER-TRIAGED</p>
-          <h2 id="priority-heading">Priority nodes</h2>
-          <p class="subheading">A message from one of these nodes is never ranked below PRIORITY.</p>
-        </div>
-      </div>
-      <ul id="priority-list" class="priority-list"></ul>
-      <form id="priority-form" class="priority-form">
-        <input id="priority-node-id" type="text" placeholder="Node ID (e.g. !a1b2c3d4)" required />
-        <input id="priority-role" type="text" placeholder="Role (e.g. shelter lead)" required />
-        <button type="submit">Add priority node</button>
-      </form>
-    </section>
+      <aside class="side">
+        <section class="map-panel panel" aria-labelledby="map-heading">
+          <div class="panel-heading">
+            <div>
+              <h2 id="map-heading">Field map</h2>
+              <p class="subheading">Pins are the sender radio's last GPS fix, not the incident itself.</p>
+            </div>
+            <button id="fit-map" class="btn btn-quiet" type="button" disabled>Fit all</button>
+          </div>
+          <div class="map-frame">
+            <div id="map" aria-label="Map of tickets with known sender positions"></div>
+            <div id="map-message" class="map-message" role="status">Loading map…</div>
+            <div id="map-empty" class="map-empty" role="status" hidden></div>
+            <div class="map-legend" aria-hidden="true">
+              <span><i class="legend-dot emergency"></i>Emergency</span>
+              <span><i class="legend-dot priority"></i>Priority</span>
+              <span><i class="legend-dot welfare"></i>Welfare</span>
+              <span><i class="legend-dot routine"></i>Routine</span>
+            </div>
+          </div>
+          <div class="map-footer">
+            <span id="map-summary">Waiting for tickets…</span>
+            <span>Tiles need internet</span>
+          </div>
+        </section>
 
-    <section class="tickets-panel panel" aria-labelledby="tickets-heading">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">LIVE QUEUE</p>
-          <h2 id="tickets-heading">Tickets <span id="ticket-count" class="count">0</span></h2>
-        </div>
-        <span id="last-updated" class="last-updated">Waiting for updates…</span>
-      </div>
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Ticket</th><th scope="col">Urgency</th>
-              <th scope="col">Node</th><th scope="col">What</th>
-              <th scope="col">Reported location</th><th scope="col">Hurt</th>
-              <th scope="col">Status</th><th scope="col">Map</th>
-            </tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
-      </div>
-      <p id="table-note" class="table-note">Tickets without radio GPS remain in this queue.</p>
-    </section>
+        <section class="roster-panel panel" aria-labelledby="roster-heading">
+          <div class="panel-heading">
+            <div>
+              <h2 id="roster-heading">Radio check-in <span id="roster-count" class="count">0</span></h2>
+              <p class="subheading">When each field radio was last heard. Overdue after <span id="overdue-minutes">30</span> min of silence.</p>
+            </div>
+          </div>
+          <ul id="roster-list" class="roster-list"></ul>
+        </section>
+
+        <section class="priority-panel panel" aria-labelledby="priority-heading">
+          <div class="panel-heading">
+            <div>
+              <h2 id="priority-heading">Priority nodes</h2>
+              <p class="subheading">Messages from these radios are never ranked below Priority.</p>
+            </div>
+          </div>
+          <ul id="priority-list" class="priority-list"></ul>
+          <form id="priority-form" class="priority-form">
+            <label><span class="visually-hidden">Node ID</span>
+              <input id="priority-node-id" type="text" placeholder="!a1b2c3d4" required spellcheck="false" /></label>
+            <label><span class="visually-hidden">Role</span>
+              <input id="priority-role" type="text" placeholder="Role, e.g. shelter lead" required /></label>
+            <button class="btn" type="submit">Add</button>
+          </form>
+        </section>
+      </aside>
+    </div>
   </main>
+
+  <div id="toast" class="toast" role="status" hidden></div>
 
   <script src="/static/vendor/maplibre-contour.min.js"></script>
   <script type="module" src="/static/board.js"></script>

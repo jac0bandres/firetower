@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -64,8 +65,23 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(snapshot["decoded"]["payload"]["encoding"], "base64")
         self.assertNotIn("raw", snapshot)
         self.assertEqual(self.interface.sent, [
-            (f"{gateway.GATEWAY_NAME} FT-0001 received", {"destinationId": self.sender, "channelIndex": 0})
+            (f"{gateway.GATEWAY_NAME} FT-0001 received; EMERGENCY; queued for coordinator review.",
+             {"destinationId": self.sender, "channelIndex": 0})
         ])
+
+    def test_radio_clock_skew_does_not_expire_newly_received_gps(self):
+        stale_radio_time = int((datetime.now(timezone.utc) - timedelta(hours=2)).timestamp())
+        self.position_packet["rxTime"] = stale_radio_time
+        gateway.on_position(self.position_packet, self.interface)
+
+        position = db.get_node_position(self.sender)
+
+        self.assertIsNotNone(position)
+        self.assertLess(
+            abs((datetime.now(timezone.utc) - datetime.fromisoformat(position["received_at"])).total_seconds()),
+            5,
+        )
+        self.assertEqual(json.loads(position["meshtastic_packet_json"])["rxTime"], stale_radio_time)
 
     def test_missing_or_stale_position_does_not_pin_ticket(self):
         db.save_node_position(self.sender, 35.6, -82.5,
@@ -73,6 +89,71 @@ class PacketTests(unittest.TestCase):
         with patch.object(gateway.triage, "triage", return_value=TriageResult(urgency="ROUTINE")):
             gateway.on_receive(self.text_packet, self.interface)
         self.assertIsNone(db.list_tickets()[0]["latitude"])
+
+    def make_simulator_packet(self, reply_id=42, latitude=35.6, longitude=-82.5):
+        decoded = {
+            "portnum": "PRIVATE_APP",
+            "payload": json.dumps({
+                "id": "!cosmetic", "name": "Field volunteer", "lat": latitude, "lon": longitude,
+            }).encode("utf-8"),
+        }
+        if reply_id is not None:
+            decoded["replyId"] = reply_id
+        return {
+            "from": 0xA1B2C3D4, "fromId": self.sender, "id": 43,
+            "decoded": decoded, "raw": object(),
+        }
+
+    def test_simulator_reply_attaches_only_exact_senders_referenced_ticket(self):
+        other_sender = "!11223344"
+        with patch.object(gateway.triage, "triage", return_value=TriageResult(urgency="ROUTINE")):
+            gateway.on_receive(self.text_packet, self.interface)
+            gateway.on_receive(dict(self.text_packet, id=99), self.interface)
+            gateway.on_receive(dict(self.text_packet, fromId=other_sender,
+                                    **{"from": 0x11223344}), self.interface)
+
+        packet = self.make_simulator_packet()
+        gateway.on_simulator_position(packet, self.interface)
+
+        tickets = {ticket["ticket_code"]: ticket for ticket in db.list_tickets()}
+        target = tickets["FT-0001"]
+        self.assertEqual((target["latitude"], target["longitude"]), (35.6, -82.5))
+        self.assertEqual(target["node_id"], self.sender)
+        self.assertEqual(target["packet_id"], "42")
+        snapshot = json.loads(target["position_packet_json"])
+        self.assertEqual(snapshot["fromId"], self.sender)
+        self.assertEqual(snapshot["decoded"]["replyId"], 42)
+        self.assertNotIn("raw", snapshot)
+        self.assertIsNone(tickets["FT-0002"]["latitude"])
+        self.assertIsNone(tickets["FT-0003"]["latitude"])
+        position = db.get_node_position(self.sender)
+        self.assertEqual(target["position_received_at"], position["received_at"])
+        self.assertEqual(target["position_packet_json"], position["meshtastic_packet_json"])
+        self.assertIsNone(db.get_node_position("!cosmetic"))
+
+    def test_simulator_reply_preserves_existing_ticket_position_snapshot(self):
+        gateway.on_position(self.position_packet, self.interface)
+        with patch.object(gateway.triage, "triage", return_value=TriageResult(urgency="ROUTINE")):
+            gateway.on_receive(self.text_packet, self.interface)
+        original = db.list_tickets()[0]
+
+        gateway.on_simulator_position(
+            self.make_simulator_packet(latitude=36.1, longitude=-83.2), self.interface
+        )
+
+        ticket = db.list_tickets()[0]
+        for field in ["latitude", "longitude", "position_received_at", "position_packet_json"]:
+            self.assertEqual(ticket[field], original[field])
+        self.assertEqual(db.get_node_position(self.sender)["latitude"], 36.1)
+
+    def test_simulator_without_reply_id_only_saves_node_position(self):
+        with patch.object(gateway.triage, "triage", return_value=TriageResult(urgency="ROUTINE")):
+            gateway.on_receive(self.text_packet, self.interface)
+
+        gateway.on_simulator_position(self.make_simulator_packet(reply_id=None), self.interface)
+
+        self.assertIsNone(db.list_tickets()[0]["latitude"])
+        self.assertIsNotNone(db.get_node_position(self.sender))
 
     def test_non_text_and_own_packets_are_ignored(self):
         with patch.object(gateway.triage, "triage") as triage:

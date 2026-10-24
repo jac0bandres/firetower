@@ -15,9 +15,6 @@ def node_id(packet: dict) -> str | None:
 
 
 def received_at(packet: dict) -> str:
-    timestamp = packet.get("rxTime")
-    if isinstance(timestamp, (int, float)) and timestamp > 0:
-        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
     return datetime.now(timezone.utc).isoformat()
 
 

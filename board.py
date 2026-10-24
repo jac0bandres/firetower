@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -26,6 +26,15 @@ MOCK_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_tickets.json"
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.middleware("http")
+async def revalidate_ui_assets(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+    return response
+
 
 _mock_tickets: list[dict] = []
 _mock_priority_nodes: dict[str, str] = {
