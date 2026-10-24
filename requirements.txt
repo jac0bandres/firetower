@@ -1,0 +1,13 @@
+meshtastic
+ollama
+litellm
+pydantic
+rapidfuzz
+fastapi
+uvicorn[standard]
+requests
+python-dotenv
+snowflake-connector-python
+
+# stretch (TAK)
+pytak
