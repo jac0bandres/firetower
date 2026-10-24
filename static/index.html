@@ -20,6 +20,18 @@
   </header>
 
   <main class="dashboard">
+    <section id="emergency-panel" class="emergency-panel" aria-labelledby="emergency-heading" aria-live="polite" hidden>
+      <div class="emergency-banner">
+        <span class="emergency-mark" aria-hidden="true">!</span>
+        <div>
+          <p class="eyebrow">ACTION REQUIRED</p>
+          <h2 id="emergency-heading">Open emergency tickets</h2>
+          <p>Call emergency services yourself. Firetower never places calls.</p>
+        </div>
+      </div>
+      <div id="emergency-cards" class="emergency-cards"></div>
+    </section>
+
     <section class="map-panel panel" aria-labelledby="map-heading">
       <div class="panel-heading">
         <div>

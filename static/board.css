@@ -56,6 +56,27 @@ h2 { font-size: clamp(1.2rem, 2vw, 1.55rem); }
   margin: 0 auto;
   padding: 1.25rem clamp(1rem, 3vw, 2.5rem) 2.5rem;
 }
+.emergency-panel[hidden] { display: none; }
+.emergency-panel { overflow: hidden; border: 1px solid #a63b3a; border-radius: .85rem; background: #20191b; box-shadow: 0 12px 36px #040a0e33; }
+.emergency-banner { display: flex; align-items: center; gap: .85rem; padding: 1rem 1.2rem; background: #6b2527; color: #fff2ef; }
+.emergency-banner .eyebrow { color: #ffd2c8; }
+.emergency-banner h2 { font-size: 1.25rem; }
+.emergency-banner p:last-child { margin: .35rem 0 0; color: #ffe3dd; font-size: .85rem; }
+.emergency-mark { display: grid; flex: none; width: 2.5rem; height: 2.5rem; place-items: center; border: 2px solid #ffe1d9; border-radius: 50%; font-size: 1.4rem; font-weight: 900; }
+.emergency-cards { display: grid; gap: .75rem; padding: .85rem; }
+.emergency-card { padding: 1rem 1.1rem; border: 1px solid #754345; border-radius: .6rem; background: #291f22; }
+.emergency-card-heading, .emergency-action-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.emergency-card-heading h3 { margin: 0; color: #ffd4cd; font-size: 1rem; }
+.emergency-card-heading span, .human-call-note { color: #c5b4b4; font-size: .78rem; }
+.emergency-facts { margin: .7rem 0; color: #f4e9e6; font-size: .9rem; line-height: 1.5; }
+.script-label { margin: 0 0 .35rem; color: #e6b3a9; font-size: .7rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.call-script { margin: 0; padding: .85rem 1rem; border-left: 3px solid #e76b61; background: #151a1e; color: #f7f1ee; font-size: .9rem; line-height: 1.6; }
+.emergency-action-row { margin-top: .85rem; }
+.human-call-note { margin: 0; }
+.called-button { padding: .6rem .9rem; border: 1px solid #f19a83; border-radius: .4rem; background: #8c302f; color: #fff5f1; cursor: pointer; font-weight: 800; }
+.called-button:hover:enabled { background: #a33c39; }
+.called-button:disabled { opacity: .6; cursor: wait; }
+button:focus-visible { outline: 3px solid #f1c46f; outline-offset: 3px; }
 .panel {
   overflow: hidden;
   border: 1px solid #263640;
@@ -247,6 +268,7 @@ tbody tr:hover { background: #1a2d38; }
 @media (max-width: 720px) {
   .app-header { align-items: flex-start; }
   .panel-heading { align-items: flex-start; flex-direction: column; }
+  .emergency-card-heading, .emergency-action-row { align-items: flex-start; flex-direction: column; }
   .map-frame { height: 390px; }
   .map-footer { flex-direction: column; gap: .25rem; }
   .last-updated { white-space: normal; }

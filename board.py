@@ -2,9 +2,8 @@
 over the SQLite ticket store. The board never reaches the network itself —
 it only reads db.py and reports router.is_online() for the banner.
 
-Set FIRETOWER_MOCK=1 to serve fixtures/mock_tickets.json from memory instead
-of the real database, so the board/frontend can be built against the API
-shape before db.py and triage.py are wired up.
+Set FIRETOWER_MOCK=1 to serve fixtures/mock_tickets.json from memory for a
+static demo. The default is FIRETOWER_MOCK=0, which serves the SQLite database.
 """
 
 import json
