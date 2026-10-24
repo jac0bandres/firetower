@@ -277,7 +277,9 @@ class ClarificationTests(unittest.TestCase):
         self.assertLessEqual(len(self.interface.sent), gateway.AI_MAX_CHUNKS)
         for text, kwargs in self.interface.sent:
             self.assertLessEqual(len(text.encode("utf-8")), gateway.MAX_CHUNK_BYTES)
-            self.assertEqual(kwargs, {"destinationId": self.sender, "channelIndex": 0})
+            self.assertEqual(kwargs["destinationId"], self.sender)
+            self.assertEqual(kwargs["channelIndex"], 0)
+            self.assertTrue(kwargs["wantAck"])
 
     def test_direct_ack_without_result_still_queues_for_review(self):
         gateway.send_ack(self.sender, "FT-0001", self.interface)

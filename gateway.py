@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timedelta
 
 import meshtastic
 import meshtastic.serial_interface
@@ -22,6 +23,7 @@ load_dotenv()
 
 import ai_assistant
 import db
+import locate
 import meshtastic_packets as packets
 import triage
 from logging_config import setup_logging
@@ -41,6 +43,8 @@ DEDUPE_WINDOW_SECONDS = 120
 MAX_CHUNK_BYTES = 200
 CHANNEL_INDEX = int(os.environ.get("FIRETOWER_CHANNEL_INDEX", "0"))
 MAX_POSITION_AGE_SECONDS = int(os.environ.get("FIRETOWER_MAX_POSITION_AGE_SECONDS", "1800"))
+# Radios often send GPS a few seconds after the text it belongs to.
+LATE_POSITION_WINDOW_SECONDS = int(os.environ.get("FIRETOWER_LATE_POSITION_WINDOW_SECONDS", "300"))
 CLARIFICATION_URGENCIES = {"EMERGENCY", "PRIORITY"}
 CLARIFICATION_TTL_SECONDS = int(os.environ.get("FIRETOWER_CLARIFICATION_TTL_SECONDS", "600"))
 # Gap before sending the clarification question after the ack. Confirmed
@@ -110,6 +114,8 @@ def on_receive(packet, interface):
     if db.is_duplicate_packet(dedupe_key):
         logger.debug("Ignored duplicate packet %s from %s", packet_id, sender)
         return
+    logger.info("Received text from %s packet=%s hops=%s: %s", sender, packet_id,
+                packet.get("hopsAway", "?"), message)
 
     stripped = message.strip()
     if stripped[:len(AI_COMMAND)].lower() == AI_COMMAND:
@@ -129,6 +135,8 @@ def on_receive(packet, interface):
     if pending is not None:
         db.mark_packet_seen(dedupe_key)
         ticket_code = pending["ticket_code"]
+        logger.info("Treating message from %s as the answer to %s follow-up (steps=%s)",
+                    sender, ticket_code, ",".join(pending.get("steps") or []))
         extraction = triage.extract_with_model(message)
         ticket = _ticket_row(ticket_code) or {}
         steps = pending.get("steps") or []
@@ -141,6 +149,12 @@ def on_receive(packet, interface):
             updates["location"] = extraction.location
         if ticket.get("injured_count") is None and extraction.injured_count is not None:
             updates["injured_count"] = extraction.injured_count
+        if _is_all_clear(message, extraction):
+            db.clear_pending_clarification(sender)
+            if updates:
+                db.update_ticket_fields(ticket_code, **updates)
+            _close_all_clear(sender, ticket_code, message, interface, channel)
+            return
         if not updates and _looks_like_new_report(message, extraction, ticket, current_step):
             # The sender reported a different incident instead of answering.
             # Drop the pending question and open a ticket for the new report.
@@ -158,6 +172,8 @@ def on_receive(packet, interface):
                 db.upsert_person(sender, last_known_address=updates["location"])
             logger.info("Updated ticket %s from clarification by %s: %s",
                         ticket_code, sender, updates)
+            ticket = _ticket_row(ticket_code) or ticket
+        if _refine_location(ticket_code, ticket, updates, extraction):
             ticket = _ticket_row(ticket_code) or ticket
         remaining = _advance_clarification_steps(steps, ticket, pending["missing_fields"])
         if remaining:
@@ -190,6 +206,12 @@ def on_receive(packet, interface):
         return
 
     result = triage.triage(message, sender)
+    if _is_all_clear(message, result):
+        active = db.newest_active_ticket(sender, ALL_CLEAR_WINDOW_SECONDS)
+        if active is not None:
+            db.mark_packet_seen(dedupe_key)
+            _close_all_clear(sender, active["ticket_code"], message, interface, channel)
+            return
     if not result.location:
         person = db.get_person(sender)
         if person and person.get("last_known_address"):
@@ -198,7 +220,16 @@ def on_receive(packet, interface):
     if result.location:
         db.upsert_person(sender, last_known_address=result.location)
 
-    latest_position = db.get_node_position(sender, MAX_POSITION_AGE_SECONDS)
+    fresh_position = db.get_node_position(sender, MAX_POSITION_AGE_SECONDS)
+    latest_position = fresh_position
+    if latest_position is None:
+        # An older fix is still a useful approximation. The board shows its
+        # age, and it does not count as GPS for the follow-up questions.
+        latest_position = db.get_node_position(sender, None)
+        if latest_position is not None:
+            logger.info("No fresh GPS for %s; using approximate fix from %s (%.5f, %.5f)",
+                        sender, latest_position["received_at"],
+                        latest_position["latitude"], latest_position["longitude"])
     hop_count = packet.get("hopsAway")
     if hop_count is None and "hopStart" in packet and "hopLimit" in packet:
         hop_count = max(0, packet["hopStart"] - packet["hopLimit"])
@@ -221,15 +252,29 @@ def on_receive(packet, interface):
         "position_received_at": latest_position["received_at"] if latest_position else None,
         "position_packet_json": latest_position["meshtastic_packet_json"] if latest_position else None,
         "meshtastic_packet_json": packets.packet_json(packet),
+        "location_source": (
+            None if latest_position is None else "gps" if fresh_position else "gps_old"
+        ),
+        "location_note": (
+            f"last GPS fix from this radio, received {latest_position['received_at']}"
+            if latest_position is not None and fresh_position is None else None
+        ),
     })
     db.mark_packet_seen(dedupe_key)
-    logger.info("Stored ticket %s from %s at urgency %s", ticket_code, sender, result.urgency)
+    logger.info("Stored ticket %s from %s at urgency %s (location=%r, position=%s)",
+                ticket_code, sender, result.urgency, result.location,
+                "gps" if fresh_position else "old gps" if latest_position else "none")
     try:
         send_ack(sender, ticket_code, interface, channel, result=result)
     except Exception:
         logger.exception("Ticket %s stored, but acknowledgment to %s failed", ticket_code, sender)
 
-    has_gps = _has_gps(latest_position)
+    if fresh_position is None:
+        # After the ack, so a slow map lookup never delays it.
+        _estimate_location(ticket_code, result.location, packet, sender,
+                           have_old_fix=latest_position is not None)
+
+    has_gps = _has_gps(fresh_position)
     steps = _clarification_steps(result, has_gps, message)
     if steps:
         missing = _missing_fields(result, message)
@@ -273,6 +318,37 @@ def _is_missing_person(*texts: str | None) -> bool:
     return any(text and _MISSING_PERSON.search(text) for text in texts)
 
 
+# "It's over" wording. "Nobody hurt, everyone is outside" is NOT all clear:
+# no injuries, but the fire may still be burning, so that ticket stays open.
+_ALL_CLEAR = re.compile(
+    r"\b(?:all clear|false alarm|never ?mind|nvm|cancel(?: that| the)?(?: request| report)?|"
+    r"(?:the )?(?:fire|it|water|smoke)(?:'s| is| has)? (?:out|gone|under control|stopped|receded)|"
+    r"(?:we|i)(?:'re|'m| are| am) (?:all )?(?:ok|okay|fine|safe|good) now|"
+    r"everyone(?:'s| is) (?:ok|okay|fine|safe)(?: now)?|"
+    r"(?:no longer|don'?t|do not) need (?:help|anyone|assistance)|"
+    r"situation (?:is )?(?:resolved|under control)|resolved|we got it handled)\b",
+    re.I,
+)
+ALL_CLEAR_WINDOW_SECONDS = int(os.environ.get("FIRETOWER_ALL_CLEAR_WINDOW_SECONDS", str(12 * 3600)))
+
+
+def _is_all_clear(message: str, extraction) -> bool:
+    """The sender says the situation is over, and the model agrees it is not urgent."""
+    return bool(_ALL_CLEAR.search(message)) and extraction.urgency in ("ROUTINE", "WELFARE")
+
+
+def _close_all_clear(sender: str, ticket_code: str, message: str, interface, channel: int) -> None:
+    db.append_clarification(ticket_code, response=message)
+    db.set_ticket_status(ticket_code, "closed")
+    logger.info("Closed %s: %s reported all clear (%r)", ticket_code, sender, message)
+    try:
+        send_ticket_note(sender, ticket_code,
+                         "Closed: you reported all clear. Message again if anything changes.",
+                         interface, channel, kind=f"all-clear close {ticket_code}")
+    except Exception:
+        logger.exception("All-clear confirmation to %s failed", sender)
+
+
 def _same_place(first: str, second: str) -> bool:
     a = " ".join(re.findall(r"[a-z0-9]+", first.lower()))
     b = " ".join(re.findall(r"[a-z0-9]+", second.lower()))
@@ -313,6 +389,68 @@ def _has_gps(position_or_ticket) -> bool:
         position_or_ticket.get("latitude") is not None
         and position_or_ticket.get("longitude") is not None
     )
+
+
+def _last_fix(sender: str | None) -> tuple[float, float] | None:
+    fix = db.get_node_position(sender, None) if sender else None
+    return (fix["latitude"], fix["longitude"]) if fix else None
+
+
+def _estimate_location(ticket_code: str, place: str | None, packet: dict, sender: str,
+                       have_old_fix: bool) -> None:
+    """No fresh GPS: pin the ticket from what the sender said, or failing
+    that (and with no older fix either) from the radio link."""
+    estimate = locate.from_text(place, _last_fix(sender))
+    source = "map"
+    if estimate is None and not have_old_fix:
+        estimate = locate.radio_area(packet, sender)
+        source = "radio_area"
+    if estimate is None:
+        if not have_old_fix:
+            logger.info("No location estimate for %s; it stays off the map", ticket_code)
+        return
+    if db.set_location_estimate(ticket_code, estimate["latitude"], estimate["longitude"],
+                                source, estimate["radius_m"], estimate["note"]):
+        logger.info("Located %s by %s: %.5f, %.5f (+/-%sm) %s", ticket_code, source,
+                    estimate["latitude"], estimate["longitude"], estimate["radius_m"],
+                    estimate["note"])
+
+
+def _refine_location(ticket_code: str, ticket: dict, updates: dict, extraction) -> bool:
+    """A follow-up answer named a place: look it up unless real GPS exists.
+
+    A map pin is only replaced when the answer changed the ticket's location
+    (the address step); a landmark can still pin a ticket that has no map pin.
+    """
+    source = ticket.get("location_source")
+    if source == "gps" or (source == "map" and "location" not in updates):
+        return False
+    place = updates.get("location") or extraction.location
+    estimate = locate.from_text(place, _last_fix(ticket.get("node_id")))
+    if estimate is None:
+        return False
+    changed = db.set_location_estimate(
+        ticket_code, estimate["latitude"], estimate["longitude"], "map",
+        estimate["radius_m"], estimate["note"],
+    )
+    if changed:
+        logger.info("Located %s from follow-up answer: %.5f, %.5f (+/-%sm) %s", ticket_code,
+                    estimate["latitude"], estimate["longitude"], estimate["radius_m"],
+                    estimate["note"])
+    return changed
+
+
+def _has_fresh_gps(ticket: dict) -> bool:
+    """Coordinates from a fix close in time to the report, not an approximation."""
+    if ticket.get("location_source") is not None:
+        return ticket["location_source"] == "gps"
+    if not _has_gps(ticket) or not ticket.get("position_received_at") or not ticket.get("received_at"):
+        return False
+    gap = abs(
+        datetime.fromisoformat(ticket["received_at"])
+        - datetime.fromisoformat(ticket["position_received_at"])
+    )
+    return gap <= timedelta(seconds=MAX_POSITION_AGE_SECONDS)
 
 
 def _looks_like_address(location: str | None) -> bool:
@@ -384,7 +522,7 @@ def _prune_clarification_steps(steps: list[str], ticket: dict) -> list[str]:
 def _advance_clarification_steps(steps: list[str], ticket: dict, asked_missing: list[str]) -> list[str]:
     # A GPS fix, including one that arrives mid-conversation, ends the
     # location drill. The single-question path also ends after this reply.
-    if _has_gps(ticket):
+    if _has_fresh_gps(ticket):
         return []
     remaining = list(steps[1:]) if steps else []
     if (
@@ -486,6 +624,7 @@ def _ai_clarification_question(missing_fields: list[str], raw_text: str) -> str:
         logger.warning("AI clarification question generation failed, using template", exc_info=True)
         return fallback
     if question is None:
+        logger.info("Model follow-up question unusable, using template")
         return fallback
     asks_location = re.search(r"\b(where|location|address|landmark|intersection)\b", question, re.I)
     # "How many are hurt?" or a yes/no form such as "Is your son hurt?"
@@ -495,8 +634,10 @@ def _ai_clarification_question(missing_fields: list[str], raw_text: str) -> str:
         question, re.I,
     )
     if "location" in missing_fields and not asks_location:
+        logger.info("Model question %r does not ask for location, using template", question)
         return fallback
     if "injured_count" in missing_fields and not asks_count:
+        logger.info("Model question %r does not ask about injuries, using template", question)
         return fallback
     return question
 
@@ -539,9 +680,23 @@ def on_position(packet, interface):
     sender = packets.node_id(packet)
     coordinates = packets.position(packet)
     if sender and coordinates:
-        db.save_node_position(
-            sender, *coordinates, packets.received_at(packet), packets.packet_json(packet)
-        )
+        received_at = packets.received_at(packet)
+        packet_json = packets.packet_json(packet)
+        logger.info("GPS from %s: %.5f, %.5f", sender, *coordinates)
+        db.save_node_position(sender, *coordinates, received_at, packet_json)
+        _attach_late_position(sender, coordinates, received_at, packet_json)
+    elif sender:
+        logger.debug("Position packet from %s had no usable coordinates", sender)
+
+
+def _attach_late_position(sender: str, coordinates, received_at: str, packet_json: str) -> None:
+    ticket_code = db.attach_late_position(
+        sender, *coordinates, received_at, packet_json,
+        LATE_POSITION_WINDOW_SECONDS, MAX_POSITION_AGE_SECONDS,
+    )
+    if ticket_code:
+        logger.info("Attached late GPS from %s to %s: %.5f, %.5f",
+                    sender, ticket_code, *coordinates)
 
 
 def on_simulator_position(packet, interface):
@@ -558,25 +713,70 @@ def on_simulator_position(packet, interface):
     if coordinates:
         received_at = packets.received_at(packet)
         packet_json = packets.packet_json(packet)
+        logger.info("Simulator GPS from %s: %.5f, %.5f", sender, *coordinates)
         db.save_node_position(
             sender, *coordinates, received_at, packet_json
         )
         reply_id = packet.get("decoded", {}).get("replyId")
         if reply_id is not None:
             db.attach_ticket_position(sender, str(reply_id), *coordinates, received_at, packet_json)
+        else:
+            _attach_late_position(sender, coordinates, received_at, packet_json)
     name = packets.simulator_name(packet)
     if name:
         db.upsert_person(sender, display_name=name)
 
 
+# Model replies sometimes use typographic punctuation (U+2011 non-breaking
+# hyphen, curly quotes, ellipsis). Radios get plain ASCII.
+_ASCII_PUNCTUATION = str.maketrans({
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-",
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+    "…": "...", " ": " ", " ": " ",
+})
+
+
+def _radio_text(text: str) -> str:
+    return text.translate(_ASCII_PUNCTUATION).encode("ascii", "ignore").decode("ascii")
+
+
+def _send_dm(interface, text: str, node_id: str, channel_index: int, kind: str) -> None:
+    """Every outgoing radio message goes through here: DM only, sent reliably,
+    with the destination's delivery receipt (or failure) written to the log."""
+    sent_at = time.monotonic()
+
+    # Meshtastic only hands plain ACKs to a callback with exactly this name.
+    def onAckNak(packet):
+        reason = packet.get("decoded", {}).get("routing", {}).get("errorReason", "NONE")
+        acked_by = packets.node_id(packet)
+        elapsed = time.monotonic() - sent_at
+        if reason != "NONE":
+            logger.warning("Delivery FAILED for %s to %s: %s after %.1fs",
+                           kind, node_id, reason, elapsed)
+        elif acked_by == node_id:
+            logger.info("Delivered %s to %s (ack after %.1fs)", kind, node_id, elapsed)
+        else:
+            logger.info("Relayed %s toward %s (ack from %s after %.1fs, not yet confirmed "
+                        "by the destination)", kind, node_id, acked_by, elapsed)
+
+    sent = interface.sendText(
+        text, destinationId=node_id, channelIndex=channel_index,
+        wantAck=True, onResponse=onAckNak,
+    )
+    packet_id = getattr(sent, "id", None)
+    logger.info("Sent %s to %s packet=%s bytes=%d: %s", kind, node_id,
+                f"{packet_id:08x}" if isinstance(packet_id, int) else "?",
+                len(text.encode("utf-8")), text)
+
+
 def send_ack(node_id: str, ticket_code: str, interface, channel_index: int = CHANNEL_INDEX,
              result=None) -> None:
     urgency = f"; {result.urgency}" if result is not None else ""
-    message = f"{GATEWAY_NAME} {ticket_code} received{urgency}; queued for coordinator review."
+    message = _radio_text(f"{GATEWAY_NAME} {ticket_code} received{urgency}; queued for coordinator review.")
     encoded = message.encode("utf-8")
     if len(encoded) > MAX_CHUNK_BYTES:
         raise ValueError("Acknowledgment exceeds the Meshtastic payload limit")
-    interface.sendText(message, destinationId=node_id, channelIndex=channel_index)
+    _send_dm(interface, message, node_id, channel_index, f"ack {ticket_code}")
 
 
 def _chunk_text(text: str, max_bytes: int) -> list[str]:
@@ -604,18 +804,18 @@ def _chunk_text(text: str, max_bytes: int) -> list[str]:
 
 
 def _send_chunked(node_id: str, text: str, label: str, multi_label, interface,
-                   channel_index: int = CHANNEL_INDEX) -> None:
+                   channel_index: int = CHANNEL_INDEX, kind: str = "message") -> None:
     """DM-only, never broadcast — chunked to the radio payload limit, capped
     at AI_MAX_CHUNKS so one message can't flood the mesh with airtime. `label`
     prefixes a single-chunk send; `multi_label(index, total)` prefixes each
     piece when more than one chunk is needed."""
     reserve = len(label.encode("utf-8")) + len(f"({AI_MAX_CHUNKS}/{AI_MAX_CHUNKS}) ".encode("utf-8"))
     budget = MAX_CHUNK_BYTES - reserve
-    chunks = _chunk_text(text.strip(), budget) or [""]
+    chunks = _chunk_text(_radio_text(text).strip(), budget) or [""]
 
     if len(chunks) > AI_MAX_CHUNKS:
         chunks = chunks[:AI_MAX_CHUNKS]
-        marker = "…"
+        marker = "..."
         last = chunks[-1]
         while last and len((last + marker).encode("utf-8")) > budget:
             last = last[:-1]
@@ -623,25 +823,42 @@ def _send_chunked(node_id: str, text: str, label: str, multi_label, interface,
 
     total = len(chunks)
     for index, chunk in enumerate(chunks, start=1):
-        prefix = label if total == 1 else multi_label(index, total)
-        interface.sendText(f"{prefix}{chunk}", destinationId=node_id, channelIndex=channel_index)
+        prefix = _radio_text(label if total == 1 else multi_label(index, total))
+        part = kind if total == 1 else f"{kind} ({index}/{total})"
+        _send_dm(interface, f"{prefix}{chunk}", node_id, channel_index, part)
         if index < total:
             time.sleep(3)
 
 
 def send_ai_reply(node_id: str, reply: str, interface, channel_index: int = CHANNEL_INDEX) -> None:
-    _send_chunked(node_id, reply, AI_PREFIX, lambda i, n: f"{AI_PREFIX}({i}/{n}) ", interface, channel_index)
+    _send_chunked(node_id, reply, AI_PREFIX, lambda i, n: f"{AI_PREFIX}({i}/{n}) ",
+                  interface, channel_index, kind="!ai reply")
 
 
 def send_ticket_note(node_id: str, ticket_code: str, note: str, interface,
-                      channel_index: int = CHANNEL_INDEX) -> None:
-    """A short DM tagged to a ticket — the follow-up clarification question or
-    the confirmation after the sender replies to one."""
+                      channel_index: int = CHANNEL_INDEX, kind: str | None = None) -> None:
+    """A short DM tagged to a ticket — the follow-up clarification question,
+    the confirmation after the sender replies to one, or a dispatch notice."""
     _send_chunked(
         node_id, note, f"{GATEWAY_NAME} {ticket_code}: ",
         lambda i, n: f"{GATEWAY_NAME} {ticket_code} ({i}/{n}): ",
-        interface, channel_index,
+        interface, channel_index, kind=kind or f"note {ticket_code}",
     )
+
+
+def send_outbox(interface) -> None:
+    """Send DMs the board queued (it cannot reach the radio itself)."""
+    for message in db.list_unsent_outbox():
+        try:
+            send_ticket_note(message["node_id"], message["ticket_code"], message["text"],
+                             interface, CHANNEL_INDEX, kind=message["kind"])
+        except Exception as error:
+            logger.exception("Queued %s to %s failed", message["kind"], message["node_id"])
+            db.finish_outbox(message["id"], error=str(error) or type(error).__name__)
+            continue
+        db.finish_outbox(message["id"])
+        # Same gap as the follow-ups: back-to-back sends collide on the radio.
+        time.sleep(CLARIFICATION_SEND_DELAY_SECONDS)
 
 
 def main():
@@ -667,6 +884,12 @@ def main():
         )
     if user.get("longName"):
         GATEWAY_NAME = user["longName"]
+    own_position = own_node.get("position", {}) if isinstance(own_node, dict) else {}
+    if own_position.get("latitude") is not None and own_position.get("longitude") is not None:
+        locate.set_gateway_position(own_position["latitude"], own_position["longitude"])
+    else:
+        logger.warning("Gateway radio has no GPS position; radio-area estimates need "
+                       "FIRETOWER_GATEWAY_LAT/FIRETOWER_GATEWAY_LON or a known relay")
     logger.info("Gateway connected on private Meshtastic channel %s (%s) as %s",
                 CHANNEL_INDEX, channel_name, GATEWAY_NAME)
     pub.subscribe(on_receive, "meshtastic.receive.text")
@@ -676,6 +899,10 @@ def main():
     try:
         while True:
             time.sleep(1)
+            try:
+                send_outbox(interface)
+            except Exception:
+                logger.exception("Outbox check failed")
     except KeyboardInterrupt:
         interface.close()
 

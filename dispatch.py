@@ -55,6 +55,21 @@ def suggest_teams(ticket: dict) -> list[str]:
     return [team for team in TEAMS if team in matched]
 
 
+def sender_notice(teams: list[str]) -> str:
+    """The radio DM to the reporter once the coordinator dispatches.
+
+    It only states what the coordinator recorded; it promises no arrival
+    time and gives no safety or medical advice.
+    """
+    labels = [TEAM_LABELS[team] for team in normalize_teams(teams)]
+    if len(labels) == 1:
+        named = labels[0]
+    else:
+        named = ", ".join(labels[:-1]) + " and " + labels[-1]
+    return (f"The coordinator is sending {named} to your report. "
+            "Reply here with any changes to where you are or who is hurt.")
+
+
 def normalize_teams(teams: list[str]) -> list[str]:
     if not isinstance(teams, (list, tuple)) or any(team not in TEAMS for team in teams):
         raise ValueError(f"Invalid dispatch teams: {teams}")

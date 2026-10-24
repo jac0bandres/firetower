@@ -73,6 +73,51 @@ function coordinates(ticket) {
   return [longitude, latitude];
 }
 
+// Matches the gateway's FIRETOWER_MAX_POSITION_AGE_SECONDS default. A fix
+// further than this from the report is the radio's last known position,
+// shown as an approximation.
+const APPROX_GPS_MINUTES = 30;
+
+function gpsGapMinutes(ticket) {
+  const report = new Date(ticket.received_at).getTime();
+  const fix = new Date(ticket.position_received_at).getTime();
+  if (Number.isNaN(report) || Number.isNaN(fix)) return null;
+  return Math.abs(report - fix) / 60000;
+}
+
+// Where a pin came from (tickets.location_source). Older rows have no
+// source; their GPS counts as approximate when the fix is far from the report.
+function locationSource(ticket) {
+  if (ticket.location_source) return ticket.location_source;
+  if (!coordinates(ticket)) return null;
+  const gap = gpsGapMinutes(ticket);
+  return gap != null && gap > APPROX_GPS_MINUTES ? "gps_old" : "gps";
+}
+
+function isApproxGps(ticket) {
+  const source = locationSource(ticket);
+  return source != null && source !== "gps";
+}
+
+function formatRadius(meters) {
+  if (!Number.isFinite(meters)) return "";
+  return meters >= 1000 ? `±${(meters / 1000).toFixed(meters >= 10000 ? 0 : 1)} km` : `±${meters} m`;
+}
+
+function gpsLabel(ticket) {
+  const radius = formatRadius(ticket.location_radius_m);
+  switch (locationSource(ticket)) {
+    case "gps_old":
+      return `Approx. (old GPS, ${formatDuration(gpsGapMinutes(ticket))} from report)`;
+    case "map":
+      return `Map lookup of stated place${radius ? ` (${radius})` : ""}`;
+    case "radio_area":
+      return `Radio area${radius ? ` (${radius})` : ""}`;
+    default:
+      return "Radio GPS";
+  }
+}
+
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -179,15 +224,18 @@ function makePopup(ticket) {
     ["Node", ticket.node_id],
     ["Report", ticket.what_happened || ticket.raw_text],
     ["Reported place", ticket.location || "Not specified"],
-    ["Sender GPS received", formatTime(ticket.position_received_at)],
+    ["Pin", gpsLabel(ticket)],
+    ...(ticket.location_note ? [["How", ticket.location_note]] : []),
+    ...(ticket.position_received_at ? [["Sender GPS received", formatTime(ticket.position_received_at)]] : []),
     ...(dispatched.length ? [["Dispatched", dispatched.join(", ")]] : []),
   ]) {
     const line = el("p");
     line.append(el("strong", null, `${label}: `), document.createTextNode(String(value || "")));
     container.append(line);
   }
-  container.append(el("p", "popup-note",
-    "This pin is the sender radio's last known position, not a verified incident location."));
+  container.append(el("p", "popup-note", isApproxGps(ticket)
+    ? "Approximate pin, not a verified incident location. Confirm with the sender."
+    : "This pin is the sender radio's last known position, not a verified incident location."));
   return container;
 }
 
@@ -208,7 +256,7 @@ function syncMarkers(tickets) {
     const signature = JSON.stringify([
       ticket.latitude, ticket.longitude, ticket.urgency, ticket.status, isPriorityNode,
       ticket.what_happened, ticket.raw_text, ticket.location, ticket.position_received_at,
-      ticket.dispatched_teams,
+      ticket.dispatched_teams, ticket.location_source, ticket.location_radius_m,
     ]);
     const previous = markerByCode.get(ticket.ticket_code);
     if (previous?.signature === signature) continue;
@@ -219,8 +267,10 @@ function syncMarkers(tickets) {
     pin.className = [
       "ticket-marker", ticket.urgency.toLowerCase(), ticket.status,
       isPriorityNode ? "priority-node" : "",
+      isApproxGps(ticket) ? "is-approx" : "",
       ticket.ticket_code === selectedCode ? "is-selected" : "",
     ].join(" ");
+    pin.title = `${ticket.ticket_code}: ${gpsLabel(ticket)}`;
     pin.setAttribute("aria-label", `${ticket.ticket_code}, ${ticket.urgency}`);
     pin.addEventListener("click", () => selectTicket(ticket.ticket_code, { fromMap: true }));
     const popup = new maplibregl.Popup({ offset: 18, maxWidth: "300px" })
@@ -238,6 +288,254 @@ function syncMarkers(tickets) {
     fitLocatedTickets();
     initialFitDone = true;
   }
+}
+
+// ---------- simulated response units ----------
+// Firetower never contacts a department. This only animates the
+// coordinator's dispatch record: each dispatched team leaves a pretend
+// staging point and reaches the ticket's pin SIM_TRAVEL_SECONDS later.
+const SIM_TRAVEL_SECONDS = 180;
+const SIM_START_METERS = 2500;
+const TEAM_BEARING = { fire: 45, police: 135, ems: 225, rescue: 315 };
+const unitMarkers = new Map();
+let unitFrame = 0;
+let lastRouteTrim = 0;
+
+function offsetPoint([longitude, latitude], meters, bearingDegrees) {
+  const bearing = (bearingDegrees * Math.PI) / 180;
+  const dLat = (meters * Math.cos(bearing)) / 111320;
+  const dLon = (meters * Math.sin(bearing)) / (111320 * Math.cos((latitude * Math.PI) / 180));
+  return [longitude + dLon, latitude + dLat];
+}
+
+// ---------- facilities (OpenStreetMap, cached by the board) ----------
+const TEAM_FACILITY = { fire: "fire", police: "police", ems: "hospital", rescue: "fire" };
+const FACILITY_LABELS = { fire: "Fire station", hospital: "Hospital", police: "Police" };
+const FACILITY_BADGE = { fire: "F", hospital: "H", police: "P" };
+const MAX_STATION_METERS = 40000;
+let facilityList = [];
+let facilitiesCheckedAt = 0;
+const facilityMarkers = new Map();
+
+function metersBetween([lon1, lat1], [lon2, lat2]) {
+  const x = ((lon2 - lon1) * Math.PI / 180) * Math.cos(((lat1 + lat2) / 2) * Math.PI / 180);
+  const y = (lat2 - lat1) * Math.PI / 180;
+  return Math.sqrt(x * x + y * y) * 6371000;
+}
+
+function nearestFacility(team, point) {
+  const kind = TEAM_FACILITY[team];
+  let best = null;
+  let bestMeters = MAX_STATION_METERS;
+  for (const facility of facilityList) {
+    if (facility.kind !== kind) continue;
+    const meters = metersBetween([facility.longitude, facility.latitude], point);
+    if (meters < bestMeters) {
+      best = facility;
+      bestMeters = meters;
+    }
+  }
+  return best;
+}
+
+async function loadFacilities() {
+  // The list changes rarely; the board refreshes its cache in the background.
+  if (Date.now() - facilitiesCheckedAt < 60000) return;
+  facilitiesCheckedAt = Date.now();
+  try {
+    const response = await fetch("/api/facilities", { cache: "no-store" });
+    if (!response.ok) return;
+    facilityList = (await response.json()).facilities || [];
+    syncFacilities();
+    syncUnits(latestTickets);
+  } catch (error) {
+    console.error("Facilities load failed", error);
+  }
+}
+
+function facilityPopup(facility) {
+  const container = document.createElement("div");
+  container.append(el("h3", null, facility.name));
+  for (const [label, value] of [
+    ["Type", FACILITY_LABELS[facility.kind] + (facility.emergency_room ? " (emergency room)" : "")],
+    ["Address", facility.address],
+    ["Phone", facility.phone],
+  ]) {
+    if (!value) continue;
+    const line = el("p");
+    line.append(el("strong", null, `${label}: `), document.createTextNode(value));
+    container.append(line);
+  }
+  container.append(el("p", "popup-note",
+    "OpenStreetMap data, may be out of date. Firetower does not contact this facility."));
+  return container;
+}
+
+function syncFacilities() {
+  if (!mapReady) return;
+  const present = new Set(facilityList.map((facility) => facility.id));
+  for (const [id, marker] of facilityMarkers) {
+    if (!present.has(id)) {
+      marker.remove();
+      facilityMarkers.delete(id);
+    }
+  }
+  for (const facility of facilityList) {
+    if (facilityMarkers.has(facility.id)) continue;
+    const badge = el("div", `facility-marker kind-${facility.kind}`, FACILITY_BADGE[facility.kind]);
+    badge.title = `${facility.name} (${FACILITY_LABELS[facility.kind]})`;
+    const marker = new maplibregl.Marker({ element: badge })
+      .setLngLat([facility.longitude, facility.latitude])
+      .setPopup(new maplibregl.Popup({ offset: 12, maxWidth: "260px" }).setDOMContent(facilityPopup(facility)))
+      .addTo(map);
+    facilityMarkers.set(facility.id, marker);
+  }
+}
+
+function unitProgress(unit, now = Date.now()) {
+  return Math.min(1, Math.max(0, (now - unit.departed) / (SIM_TRAVEL_SECONDS * 1000)));
+}
+
+function syncUnits(tickets) {
+  if (!mapReady) return;
+  const wanted = new Map();
+  for (const ticket of tickets) {
+    const end = coordinates(ticket);
+    const departed = new Date(ticket.dispatched_at).getTime();
+    if (!end || ticket.status === "closed" || Number.isNaN(departed)) continue;
+    for (const team of teamIds(ticket.dispatched_teams)) {
+      const station = nearestFacility(team, end);
+      wanted.set(`${ticket.ticket_code}:${team}:${end.join(",")}:${station?.id ?? "staging"}`,
+        { ticket, team, end, departed, station });
+    }
+  }
+  for (const [key, unit] of unitMarkers) {
+    if (!wanted.has(key)) {
+      unit.marker.remove();
+      unitMarkers.delete(key);
+    }
+  }
+  for (const [key, info] of wanted) {
+    if (unitMarkers.has(key)) continue;
+    const badge = el("div", `unit-marker team-${info.team}`, teamLabel(info.team));
+    // Leave from the nearest real station of that kind when we know one.
+    const start = info.station
+      ? [info.station.longitude, info.station.latitude]
+      : offsetPoint(info.end, SIM_START_METERS, TEAM_BEARING[info.team] ?? 0);
+    const marker = new maplibregl.Marker({ element: badge }).setLngLat(start).addTo(map);
+    const unit = {
+      marker, badge, start, end: info.end, departed: info.departed,
+      code: info.ticket.ticket_code, team: info.team, from: info.station?.name,
+    };
+    setUnitPath(unit, [start, info.end]);
+    unitMarkers.set(key, unit);
+    loadStreetRoute(unit);
+  }
+  syncRoutes();
+  if (unitMarkers.size && !unitFrame) unitFrame = requestAnimationFrame(animateUnits);
+}
+
+function setUnitPath(unit, path) {
+  // Cumulative lengths let the badge move at an even pace along every street.
+  const lengths = [0];
+  for (let i = 1; i < path.length; i += 1) {
+    lengths.push(lengths[i - 1] + metersBetween(path[i - 1], path[i]));
+  }
+  unit.path = path;
+  unit.lengths = lengths;
+}
+
+async function loadStreetRoute(unit) {
+  const [from, to] = [unit.start, unit.end];
+  const query = new URLSearchParams({
+    from_lon: from[0], from_lat: from[1], to_lon: to[0], to_lat: to[1],
+  });
+  try {
+    const response = await fetch(`/api/route?${query}`, { cache: "no-store" });
+    if (!response.ok) return;
+    const route = await response.json();
+    if (route.source !== "osrm" || route.coordinates.length < 2) return;
+    // The route starts and ends on the nearest road; join it to the exact points.
+    setUnitPath(unit, [from, ...route.coordinates, to]);
+    unit.roadMinutes = route.duration_s ? route.duration_s / 60 : null;
+    syncRoutes();
+  } catch (error) {
+    console.error("Street route failed", error);
+  }
+}
+
+function pointAlong(unit, progress) {
+  const total = unit.lengths[unit.lengths.length - 1];
+  if (!total) return unit.path[unit.path.length - 1];
+  const target = total * progress;
+  let i = 1;
+  while (i < unit.lengths.length - 1 && unit.lengths[i] < target) i += 1;
+  const segment = unit.lengths[i] - unit.lengths[i - 1] || 1;
+  const t = Math.min(1, Math.max(0, (target - unit.lengths[i - 1]) / segment));
+  const [a, b] = [unit.path[i - 1], unit.path[i]];
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+function remainingPath(unit, progress) {
+  const total = unit.lengths[unit.lengths.length - 1];
+  const target = total * progress;
+  const ahead = unit.path.filter((_, i) => unit.lengths[i] > target);
+  return [pointAlong(unit, progress), ...ahead];
+}
+
+function syncRoutes() {
+  if (!map?.isStyleLoaded?.()) return;
+  const now = Date.now();
+  const data = {
+    type: "FeatureCollection",
+    features: [...unitMarkers.values()]
+      .filter((unit) => unitProgress(unit, now) < 1)
+      .map((unit) => ({
+        type: "Feature",
+        properties: { team: unit.team },
+        geometry: { type: "LineString", coordinates: remainingPath(unit, unitProgress(unit, now)) },
+      })),
+  };
+  const source = map.getSource("sim-routes");
+  if (source) {
+    source.setData(data);
+    return;
+  }
+  map.addSource("sim-routes", { type: "geojson", data });
+  map.addLayer({
+    id: "sim-routes", type: "line", source: "sim-routes",
+    layout: { "line-cap": "round" },
+    paint: { "line-color": "#c9d4dc", "line-width": 2, "line-dasharray": [1.5, 2], "line-opacity": 0.7 },
+  });
+}
+
+function animateUnits() {
+  unitFrame = 0;
+  const now = Date.now();
+  let moving = false;
+  for (const unit of unitMarkers.values()) {
+    // Lights and sirens: constant pace, no stops at intersections or lights.
+    const progress = unitProgress(unit, now);
+    unit.marker.setLngLat(pointAlong(unit, progress));
+    const arrived = progress >= 1;
+    if (unit.badge.classList.contains("is-arrived") !== arrived) {
+      unit.badge.classList.toggle("is-arrived", arrived);
+      syncRoutes();
+    }
+    const label = teamLabel(unit.team);
+    unit.badge.title = arrived
+      ? `${label} on scene at ${unit.code} (simulated)`
+      : `${label} en route to ${unit.code}${unit.from ? ` from ${unit.from}` : ""}, `
+        + `~${formatDuration((1 - progress) * SIM_TRAVEL_SECONDS / 60)} left (simulated`
+        + `${unit.roadMinutes ? `; ${formatDuration(unit.roadMinutes)} drive in normal traffic` : ""})`;
+    moving ||= !arrived;
+  }
+  // Trim the drawn route behind each badge about twice a second.
+  if (moving && now - lastRouteTrim > 500) {
+    lastRouteTrim = now;
+    syncRoutes();
+  }
+  if (moving) unitFrame = requestAnimationFrame(animateUnits);
 }
 
 function fitLocatedTickets() {
@@ -422,8 +720,10 @@ function renderTicket(ticket) {
   }
   const coords = coordinates(ticket);
   if (coords) {
-    const grid = fact("Grid", toUtm(coords[1], coords[0]), { mono: true });
-    grid.title = `${coords[1].toFixed(5)}, ${coords[0].toFixed(5)} (sender radio GPS)`;
+    const approx = isApproxGps(ticket);
+    const grid = fact(approx ? "Approx. grid" : "Grid", toUtm(coords[1], coords[0]), { mono: true });
+    grid.title = `${coords[1].toFixed(5)}, ${coords[0].toFixed(5)} (${gpsLabel(ticket)})`;
+    if (approx) grid.classList.add("is-approx");
     facts.append(grid);
   } else {
     facts.append(fact("GPS", null, { missing: "none" }));
@@ -562,7 +862,7 @@ async function dispatchTeams(ticketCode, button) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
     const sent = formatTeamList(teamIds(body.dispatched_teams));
-    showToast(`${ticketCode} dispatched: ${sent}`);
+    showToast(`${ticketCode} dispatched: ${sent}. The sender gets a radio message.`);
     await poll();
   } catch (error) {
     if (button) button.disabled = false;
@@ -614,7 +914,7 @@ function renderEmergencyCards() {
       ["Hurt", Number.isInteger(ticket.injured_count) ? ticket.injured_count : "unknown"],
       ["Node", ticket.node_id],
       ...(coordinates(ticket) ? [
-        ["Radio GPS", `${coordinates(ticket)[1].toFixed(5)}, ${coordinates(ticket)[0].toFixed(5)}`],
+        [gpsLabel(ticket), `${coordinates(ticket)[1].toFixed(5)}, ${coordinates(ticket)[0].toFixed(5)}`],
         ["Grid", toUtm(coordinates(ticket)[1], coordinates(ticket)[0])],
       ] : []),
     ]) {
@@ -631,7 +931,8 @@ function renderEmergencyCards() {
     for (const team of teams) {
       chips.append(el("span", `team-chip team-${team}`, teamLabel(team)));
     }
-    dispatchBox.append(chips, el("p", "dispatch-note", "Saved on this board. No call is placed."));
+    dispatchBox.append(chips, el("p", "dispatch-note",
+      "Saved on this board, and the sender is told by radio who is coming. No call is placed."));
 
     const actions = el("div", "emergency-actions");
     const send = el("button", "btn btn-dispatch", `Dispatch ${formatTeamList(teams)}`);
@@ -689,9 +990,13 @@ function tickClock() {
     return Number.isNaN(time) ? min : Math.min(min, time);
   }, Infinity);
   if (Number.isFinite(first)) {
+    // Units spelled out: next to clocks with seconds, "00:21" read as 21 seconds.
     const minutes = Math.max(0, Math.floor((now.getTime() - first) / 60000));
-    elements.clockElapsed.textContent =
-      `T+ ${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+    const hours = Math.floor(minutes / 60);
+    elements.clockElapsed.textContent = hours
+      ? `T+ ${hours}h ${String(minutes % 60).padStart(2, "0")}m`
+      : `T+ ${minutes}m`;
+    elements.clockElapsed.title = `First report at ${clockTime(new Date(first))}`;
   }
 }
 
@@ -792,6 +1097,8 @@ function updateBoard(tickets) {
   elements.fitMap.disabled = !located || !mapReady;
 
   syncMarkers(latestTickets);
+  syncUnits(latestTickets);
+  loadFacilities();
   renderSummary();
   renderEmergencyCards();
   renderQueue();
@@ -858,6 +1165,8 @@ function startMap() {
     mapReady = true;
     elements.fitMap.disabled = !latestTickets.some((ticket) => coordinates(ticket));
     syncMarkers(latestTickets);
+    syncFacilities();
+    syncUnits(latestTickets);
 
     map.on("load", () => {
       mapStyleLoaded = true;

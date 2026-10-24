@@ -21,7 +21,9 @@ load_dotenv()
 
 import db
 import dispatch
+import facilities
 import router
+import routing
 from logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.middleware("http")
 async def revalidate_ui_assets(request: Request, call_next):
     response = await call_next(request)
+    # Coordinator actions are logged; the 2-second polling GETs are not.
+    if request.method != "GET":
+        logger.info("board %s %s?%s -> %s", request.method, request.url.path,
+                    request.url.query, response.status_code)
+    elif response.status_code >= 400:
+        logger.warning("board GET %s -> %s", request.url.path, response.status_code)
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
     return response
@@ -130,9 +138,25 @@ def dispatch_ticket(ticket_code: str):
             db.set_ticket_dispatch(ticket_code, teams)
         except LookupError:
             raise HTTPException(status_code=404, detail="Ticket not found") from None
+        # The gateway holds the radio; it sends queued DMs within a few seconds.
+        db.queue_outbox(ticket["node_id"], ticket_code, f"dispatch notice {ticket_code}",
+                        dispatch.sender_notice(teams))
         ticket = _find_ticket(ticket_code)
-    logger.info("dispatch recorded ticket=%s teams=%s", ticket_code, ",".join(teams))
+    logger.info("dispatch recorded ticket=%s teams=%s; notice queued for %s",
+                ticket_code, ",".join(teams), ticket["node_id"])
     return present_ticket(ticket)
+
+
+@app.get("/api/route")
+def street_route(from_lon: float, from_lat: float, to_lon: float, to_lat: float):
+    """Driving route for the simulated dispatch animation (OSRM, or a straight line)."""
+    return routing.drive((from_lon, from_lat), (to_lon, to_lat))
+
+
+@app.get("/api/facilities")
+def list_facilities():
+    """Fire stations, hospitals and police around the mesh (OpenStreetMap)."""
+    return facilities.load()
 
 
 @app.get("/api/priority_nodes")

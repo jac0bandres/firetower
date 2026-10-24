@@ -9,6 +9,10 @@ import dispatch
 
 DB_PATH = os.environ.get("FIRETOWER_DB_PATH", "data/firetower.db")
 
+# tickets.location_source values other than real GPS ("gps"). Real GPS
+# replaces any of these; none of these ever replaces real GPS.
+ESTIMATED_SOURCES = ("gps_old", "map", "radio_area")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tickets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +87,19 @@ CREATE TABLE IF NOT EXISTS people (
     last_known_address TEXT,
     updated_at TEXT NOT NULL
 );
+
+-- Radio DMs queued by the board (which cannot reach the radio) for the
+-- gateway to send, e.g. the dispatch notice to the reporter.
+CREATE TABLE IF NOT EXISTS outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT NOT NULL,
+    ticket_code TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    sent_at TEXT,
+    error TEXT
+);
 """
 
 
@@ -114,6 +131,10 @@ def init_db():
             ("clarification_response", "TEXT"),
             ("dispatched_teams", "TEXT"),
             ("dispatched_at", "TEXT"),
+            # Where latitude/longitude came from: gps | gps_old | map | radio_area
+            ("location_source", "TEXT"),
+            ("location_radius_m", "INTEGER"),
+            ("location_note", "TEXT"),
         ):
             if name not in existing:
                 conn.execute(f"ALTER TABLE tickets ADD COLUMN {name} {column_type}")
@@ -160,6 +181,7 @@ def insert_ticket(ticket: dict) -> str:
         "latitude", "longitude", "position_received_at", "position_packet_json",
         "meshtastic_packet_json",
         "clarification_question", "clarification_response",
+        "location_source", "location_radius_m", "location_note",
     )
     with connect() as conn:
         conn.execute(
@@ -187,6 +209,18 @@ def list_tickets(status: str | None = None) -> list[dict]:
             ticket[flag] = bool(ticket[flag])
         tickets.append(ticket)
     return tickets
+
+
+def newest_active_ticket(node_id: str, max_age_seconds: int) -> dict | None:
+    """The sender's newest open or assigned ticket, if it is recent enough."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM tickets WHERE node_id = ? AND status IN ('open', 'assigned') "
+            "AND received_at >= ? ORDER BY received_at DESC, id DESC LIMIT 1",
+            (node_id, cutoff),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def set_ticket_status(ticket_code: str, status: str) -> None:
@@ -225,6 +259,34 @@ def set_ticket_dispatch(ticket_code: str, teams: list[str]) -> None:
             "UPDATE tickets SET dispatched_teams = ?, dispatched_at = ?, "
             "status = 'assigned', assigned_at = ? WHERE ticket_code = ?",
             (",".join(ordered), now, now, ticket_code),
+        )
+        conn.commit()
+
+
+def queue_outbox(node_id: str, ticket_code: str, kind: str, text: str) -> int:
+    with connect() as conn:
+        cursor = conn.execute(
+            "INSERT INTO outbox(node_id, ticket_code, kind, text, created_at) VALUES (?, ?, ?, ?, ?)",
+            (node_id, ticket_code, kind, text, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def list_unsent_outbox(limit: int = 5) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM outbox WHERE sent_at IS NULL AND error IS NULL ORDER BY id LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def finish_outbox(message_id: int, error: str | None = None) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE outbox SET sent_at = ?, error = ? WHERE id = ?",
+            (None if error else datetime.now(timezone.utc).isoformat(), error, message_id),
         )
         conn.commit()
 
@@ -270,20 +332,85 @@ def attach_ticket_position(node_id: str, packet_id: str, latitude: float,
     with connect() as conn:
         conn.execute(
             "UPDATE tickets SET latitude = ?, longitude = ?, "
-            "position_received_at = ?, position_packet_json = ? "
-            "WHERE node_id = ? AND packet_id = ? AND latitude IS NULL AND longitude IS NULL",
+            "position_received_at = ?, position_packet_json = ?, location_source = 'gps', "
+            "location_radius_m = NULL, location_note = NULL "
+            "WHERE node_id = ? AND packet_id = ? AND ("
+            "(latitude IS NULL AND longitude IS NULL) "
+            f"OR location_source IN ({', '.join(repr(s) for s in ESTIMATED_SOURCES)}))",
             (latitude, longitude, received_at, packet_json, node_id, packet_id),
         )
         conn.commit()
 
 
-def get_node_position(node_id: str, max_age_seconds: int = 1800) -> dict | None:
+def set_location_estimate(ticket_code: str, latitude: float, longitude: float, source: str,
+                          radius_m: int | None, note: str | None) -> bool:
+    """Pin a ticket from an estimate. Never overwrites real GPS."""
+    if source not in ESTIMATED_SOURCES:
+        raise ValueError(f"Not an estimated location source: {source}")
+    with connect() as conn:
+        cursor = conn.execute(
+            "UPDATE tickets SET latitude = ?, longitude = ?, location_source = ?, "
+            "location_radius_m = ?, location_note = ? "
+            "WHERE ticket_code = ? AND COALESCE(location_source, '') != 'gps'",
+            (latitude, longitude, source, radius_m, note, ticket_code),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def list_node_positions() -> list[dict]:
+    with connect() as conn:
+        return [dict(row) for row in conn.execute("SELECT * FROM node_positions")]
+
+
+def get_node_position(node_id: str, max_age_seconds: int | None = 1800) -> dict | None:
+    """The sender's last fix. max_age_seconds=None returns it at any age."""
     with connect() as conn:
         row = conn.execute("SELECT * FROM node_positions WHERE node_id = ?", (node_id,)).fetchone()
     if row is None:
         return None
+    if max_age_seconds is None:
+        return dict(row)
     age = datetime.now(timezone.utc) - datetime.fromisoformat(row["received_at"])
     return dict(row) if timedelta(0) <= age <= timedelta(seconds=max_age_seconds) else None
+
+
+def attach_late_position(node_id: str, latitude: float, longitude: float, received_at: str,
+                         packet_json: str, window_seconds: int, stale_seconds: int) -> str | None:
+    """GPS that arrives just after a text belongs to that report.
+
+    Only the sender's newest ticket is considered, only if it was received
+    within window_seconds before this fix, and only if it has no position or
+    an approximate one (a fix more than stale_seconds away from the report).
+    Returns the updated ticket code, or None.
+    """
+    fix_time = datetime.fromisoformat(received_at)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT ticket_code, received_at, latitude, position_received_at, location_source "
+            "FROM tickets WHERE node_id = ? ORDER BY received_at DESC, id DESC LIMIT 1",
+            (node_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        report_time = datetime.fromisoformat(row["received_at"])
+        if not timedelta(0) <= fix_time - report_time <= timedelta(seconds=window_seconds):
+            return None
+        if row["location_source"] == "gps":
+            return None
+        if (row["location_source"] is None and row["latitude"] is not None
+                and row["position_received_at"]):
+            gap = abs(report_time - datetime.fromisoformat(row["position_received_at"]))
+            if gap <= timedelta(seconds=stale_seconds):
+                return None
+        conn.execute(
+            "UPDATE tickets SET latitude = ?, longitude = ?, position_received_at = ?, "
+            "position_packet_json = ?, location_source = 'gps', location_radius_m = NULL, "
+            "location_note = NULL WHERE ticket_code = ?",
+            (latitude, longitude, received_at, packet_json, row["ticket_code"]),
+        )
+        conn.commit()
+    return row["ticket_code"]
 
 
 def get_or_create_ai_thread(node_id: str) -> int:

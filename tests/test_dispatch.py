@@ -168,3 +168,54 @@ def test_ticket_api_includes_suggestions(temp_db):
     listed = board.tickets()
     assert listed[0]["suggested_teams"] == ["ems"]
     assert listed[0]["dispatched_teams"] == []
+
+
+def test_sender_notice_names_teams_without_promises():
+    import dispatch as _dispatch
+    text = _dispatch.sender_notice(["rescue", "ems", "fire"])
+    assert "Fire, EMS and Rescue" in text
+    assert text.isascii()
+    for banned in ("911", "on the way", "minutes", "arrive"):
+        assert banned not in text.lower()
+
+
+def test_dispatch_queues_notice_and_gateway_sends_it(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import board
+    import db as _db
+    import gateway as _gateway
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(_db, "DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setattr(board, "MOCK_MODE", False)
+    monkeypatch.setattr(_gateway.time, "sleep", lambda seconds: None)
+    _db.init_db()
+    _db.insert_ticket({
+        "ticket_code": "FT-0001", "node_id": "!7a29cc82", "packet_id": "1",
+        "received_at": "2026-10-24T19:00:00+00:00", "raw_text": "house on fire, 2 hurt",
+        "urgency": "EMERGENCY", "location": "88 elm ave", "what_happened": "house fire",
+        "injured_count": 2, "raised_by_keyword": 0, "priority_floor_applied": 0,
+        "meshtastic_packet_json": "{}",
+    })
+
+    response = TestClient(board.app).post("/api/tickets/FT-0001/dispatch")
+    assert response.status_code == 200
+    queued = _db.list_unsent_outbox()
+    assert len(queued) == 1 and queued[0]["node_id"] == "!7a29cc82"
+
+    class Radio:
+        sent = []
+
+        def sendText(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return SimpleNamespace(id=1)
+
+    radio = Radio()
+    _gateway.send_outbox(radio)
+    _gateway.send_outbox(radio)  # already sent: nothing goes out twice
+    assert len(radio.sent) == 1
+    text, kwargs = radio.sent[0]
+    assert "FT-0001" in text and "Fire and EMS" in text
+    assert kwargs["destinationId"] == "!7a29cc82" and kwargs["wantAck"]
+    assert _db.list_unsent_outbox() == []

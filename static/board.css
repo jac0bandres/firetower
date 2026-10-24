@@ -224,6 +224,46 @@ button.stat:hover { border-color: var(--line-strong); background: var(--surface-
 .team-chip.team-rescue { border-color: #6a5226; color: #ffe6b5; background: #2a2114; }
 .emergency-actions { display: flex; align-items: center; justify-content: flex-start; gap: .5rem; flex-wrap: wrap; }
 
+.facts .is-approx dt::after { content: " ~"; }
+.facts .is-approx dd { font-style: italic; }
+/* Estimated pins: hollow with a dashed ring, so they never read as real GPS. */
+.ticket-marker.is-approx { background: #0b1218aa !important; border: 3px dashed var(--routine); }
+.ticket-marker.is-approx.emergency { border-color: var(--emergency); }
+.ticket-marker.is-approx.priority { border-color: var(--priority); }
+.ticket-marker.is-approx.welfare { border-color: var(--welfare); }
+
+/* Simulated response units on the map (dispatch animation). */
+.unit-marker {
+  padding: .1rem .4rem; border-radius: 999px;
+  border: 1.5px solid #ffffffcc; background: #2a1618; color: #fff;
+  font-size: .66rem; font-weight: 800; letter-spacing: .03em; white-space: nowrap;
+  box-shadow: 0 2px 8px #000a; pointer-events: auto; cursor: default;
+}
+.unit-marker.team-fire { background: #b8432f; }
+.unit-marker.team-police { background: #2f5f9a; }
+.unit-marker.team-ems { background: #2c7a55; }
+.unit-marker.team-rescue { background: #9a6a1f; }
+/* Lights and sirens while en route: alternating red and blue flash. */
+.unit-marker:not(.is-arrived) { animation: emergency-lights .7s steps(1) infinite; }
+@keyframes emergency-lights {
+  0%   { box-shadow: -5px 0 10px 2px #ff2a2acc, 0 2px 8px #000a; }
+  50%  { box-shadow: 5px 0 10px 2px #2a6bffcc, 0 2px 8px #000a; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .unit-marker:not(.is-arrived) { animation: none; box-shadow: 0 0 0 2px #ff2a2a, 0 2px 8px #000a; }
+}
+.unit-marker.is-arrived { margin-top: -2.6rem; opacity: .9; }
+.unit-marker.is-arrived::after { content: " on scene"; font-weight: 600; }
+.facility-marker {
+  display: grid; place-items: center; width: 1.15rem; height: 1.15rem; border-radius: 4px;
+  border: 1px solid #ffffffb0; color: #fff; font-size: .62rem; font-weight: 800;
+  box-shadow: 0 1px 4px #0009; opacity: .85; cursor: pointer;
+}
+.facility-marker.kind-fire { background: #8c3a2c; }
+.facility-marker.kind-hospital { background: #2a6b4c; }
+.facility-marker.kind-police { background: #2b4f7c; }
+.legend-unit { display: inline-block; width: .9rem; height: .55rem; border-radius: 999px; background: #2c7a55; border: 1px solid #fff9; vertical-align: middle; }
+
 /* ---------- Queue ---------- */
 .queue-tools { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; justify-content: flex-end; }
 .segmented {

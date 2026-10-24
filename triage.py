@@ -112,11 +112,12 @@ def extract_with_model(text: str) -> TriageResult:
             [{"role": "user", "content": prompt}],
             temperature=0,
         )
+        logger.debug("extraction raw model output: %r", content)
         result = TriageResult.model_validate(_extraction_payload(content))
         logger.info(
-            "extraction ok model=%s urgency=%s",
+            "extraction ok model=%s urgency=%s location=%r injured=%s what=%r",
             ai_assistant.DIGITALOCEAN_MODEL,
-            result.urgency,
+            result.urgency, result.location, result.injured_count, result.what_happened,
         )
         return result
     except Exception:

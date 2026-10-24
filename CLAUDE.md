@@ -49,9 +49,14 @@ flowchart TD
 ```
 
 Open emergency reports show the teams `dispatch.py` chose from the report
-(fire, police, EMS, rescue). Dispatch writes those teams onto the ticket and
-marks it assigned. It stays on the coordinator board: no 911 call, no contact
-with a department, and no voice read-aloud.
+(fire, police, EMS, rescue). Dispatch writes those teams onto the ticket,
+marks it assigned, and queues a radio DM to the reporter
+(`dispatch.sender_notice()`: "The coordinator is sending Fire and EMS to your
+report..."). The board cannot reach the radio, so it writes the DM to the
+`outbox` table and `gateway.send_outbox()` sends it from the gateway's main
+loop. No 911 call, no contact with a department, and no voice read-aloud. The
+notice names the teams the coordinator recorded; it never promises an arrival
+time or gives safety or medical advice.
 
 ## Triage extraction schema
 
@@ -179,7 +184,22 @@ CREATE TABLE people (
     last_known_address TEXT,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE outbox (                       -- radio DMs queued by the board
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT NOT NULL,
+    ticket_code TEXT NOT NULL,
+    kind TEXT NOT NULL,                     -- e.g. "dispatch notice FT-0003"
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    sent_at TEXT,
+    error TEXT
+);
 ```
+
+`tickets` also has `location_source` (`gps` | `gps_old` | `map` |
+`radio_area`, null when unpinned), `location_radius_m` and `location_note`.
+See "Locating reports without GPS" below.
 
 Open in WAL mode (`PRAGMA journal_mode=WAL;`) since `board.py` polls while
 `gateway.py` writes.
@@ -208,7 +228,9 @@ if it fires, the ticket is tagged `raised_by_keyword` and shown on the board.
   after removing protobuf `raw` objects and encoding byte payloads. Leave
   tickets without coordinates unpinned on maps.
 - Packet receipt timestamps (`tickets.received_at`, `node_positions.received_at` and `tickets.position_received_at`) use the gateway laptop's UTC receipt time via `meshtastic_packets.received_at()`, so radio clock drift does not make fresh positions appear stale. Preserve the original radio `rxTime` in the JSON packet snapshots.
-- Simulator GPS can arrive after its text packet. When `decoded.replyId` explicitly identifies the text packet, `db.attach_ticket_position(node_id, packet_id, latitude, longitude, received_at, packet_json)` attaches the position only to a ticket matching both sender `node_id` and text `packet_id`, and only when both coordinates are null. It updates only the four position snapshot fields; existing or partially populated coordinates stay unchanged. Never broadly backfill older tickets from a sender's latest position.
+- Simulator GPS can arrive after its text packet. When `decoded.replyId` explicitly identifies the text packet, `db.attach_ticket_position(node_id, packet_id, latitude, longitude, received_at, packet_json)` attaches the position only to a ticket matching both sender `node_id` and text `packet_id`, and only when both coordinates are null. It updates only the four position snapshot fields; existing or partially populated coordinates stay unchanged.
+- GPS that arrives after its text without a `replyId` (real `POSITION_APP` packets, or simulator JSON) goes to `db.attach_late_position()`: only the sender's *newest* ticket, only if it was received within `FIRETOWER_LATE_POSITION_WINDOW_SECONDS` (default 300s) before the fix, and only if that ticket has no position or an approximate one. Never backfill anything older.
+- With no fix within `FIRETOWER_MAX_POSITION_AGE_SECONDS` (default 1800s), a new ticket stores the sender's last known fix of any age as an **approximation**. `gateway._has_fresh_gps()` treats coordinates as real only when the fix is within that age of the report, so approximations do not stop the landmark/address follow-ups, and the board labels them "Approx." with the gap.
 - **A received packet's `channel` key is *absent*, not `0`, when it's actually on channel 0** — protobuf-to-dict conversion omits fields at their default value. `_accepted_packet` treats a missing channel as `0`; don't reintroduce a bare `packet.get("channel") != CHANNEL_INDEX` check, it silently drops every message on the primary channel (a real bug found via live hardware testing).
 - The team's virtual-node test harness sends GPS (and a display name) as JSON over `PRIVATE_APP`, not a standard `POSITION_APP` packet: `{"id":"!virt0003","name":"...","lat":...,"lon":...}`. `gateway.on_simulator_position()` (subscribed to `meshtastic.receive.data.PRIVATE_APP`) parses it via `meshtastic_packets.simulator_position()`/`simulator_name()` and saves it exactly like real GPS — the packet's own `fromId` is the sender, not the JSON `"id"` field (that's just a cosmetic label in the harness).
 - Use our own channel + PSK, never the default public channel. Gateway node name should contain "bot".
@@ -218,9 +240,35 @@ if it fires, the ticket is tagged `raised_by_keyword` and shown on the board.
 - A new EMERGENCY/PRIORITY ticket missing `location` or `injured_count`: first tries to autofill `location` from `db.get_person(sender)["last_known_address"]` (the `people` table — accumulated from prior tickets and clarification replies, never from the current message's own extraction, so it only fires for a sender we've heard from before). If still missing something, `gateway._ai_clarification_question()` asks DigitalOcean to phrase one short follow-up question from the actual message content, falling back to a static template (`_clarification_question()`) if the model fails or returns empty — the follow-up always goes out either way. **There's a `CLARIFICATION_SEND_DELAY_SECONDS` (default 5s) gap between the ack and this question** — two RELIABLE sends back-to-back collide on the half-duplex radio (confirmed live twice: the ack delivers, the immediately-following message doesn't).
 - The follow-up DM goes through `gateway.send_ticket_note`, using the AI-phrased question or static fallback described above, with a row in `pending_clarifications`. Store the original question in `clarification_question` and the sender's raw reply in `clarification_response` on the ticket so coordinators can see the exchange. The sender's *next* plain-text message (not `!ai`) is treated as the answer: `triage.extract_with_model()` runs on it, and only the extraction fields that were missing get written onto the *same* ticket via `db.update_ticket_fields` — it never creates a second ticket. `!ai` always takes precedence over a pending clarification. Entries expire after `FIRETOWER_CLARIFICATION_TTL_SECONDS` (default 600s) so an unrelated message hours later isn't misread as the reply.
 
+## Locating reports without GPS (`locate.py`)
+
+Pins come from the best available source, in this order, and the board labels
+which one (estimated pins are hollow with a dashed ring):
+
+1. `gps`: a fix from the sender's radio within `FIRETOWER_MAX_POSITION_AGE_SECONDS`
+   of the report, including one that arrives up to
+   `FIRETOWER_LATE_POSITION_WINDOW_SECONDS` after it.
+2. `map`: `locate.from_text()` looks up the stated place on OpenStreetMap
+   Nominatim (only when `router.is_online()`), bounded to the area around the
+   mesh's known radio positions (`FIRETOWER_AREA_BBOX` before any are known),
+   preferring the match nearest the sender's last fix. It runs after the ack is
+   sent, and again when a follow-up answer names a place. `PLACE_ALIASES` /
+   `FIRETOWER_PLACE_ALIASES` map local names ("the square") to map names;
+   `a|b` tries each and keeps the nearest. Max one request per second.
+3. `gps_old`: the sender's last fix of any age.
+4. `radio_area`: `locate.radio_area()`: heard directly means within
+   `FIRETOWER_RADIO_RANGE_M` of the gateway (needs the gateway radio's own
+   position or `FIRETOWER_GATEWAY_LAT`/`LON`); relayed means near the relay,
+   when its node number's last byte matches exactly one known radio.
+
+Only `gps` counts for `gateway._has_fresh_gps()`, so estimates keep the
+landmark/address follow-ups going. Real GPS replaces any estimate; no estimate
+ever replaces real GPS (`db.set_location_estimate()` refuses). Tests stub
+`locate.from_text` in `tests/conftest.py` so the suite never calls Nominatim.
+
 ## Hard rules
 
-- **Firetower never dials 911, and dispatch never contacts a fire department, police department, or other public-safety system.** `dispatch.py` chooses teams from the report. The coordinator board records and shows which team is being sent, then marks the ticket assigned. There is no 911 call card and no voice read-aloud.
+- **Firetower never dials 911, and dispatch never contacts a fire department, police department, or other public-safety system.** `dispatch.py` chooses teams from the report. The coordinator board records and shows which team is being sent, marks the ticket assigned, and tells the reporter by radio DM which teams the coordinator is sending. There is no 911 call card and no voice read-aloud.
 - Don't claim this is the first AI-on-Meshtastic project, "disaster-proof", or a replacement for 911/medical advice. "Works offline" applies to keyword urgency, ticket storage, and the board's local data. Model extraction, `!ai`, SITREP, Snowflake sync, and map tiles need a connection.
 
 ## Dev setup
@@ -240,5 +288,9 @@ Run the board: `uvicorn board:app --reload`. Run the gateway: `python gateway.py
 - Triage must degrade gracefully: if DigitalOcean extraction fails, fall back to keyword-only classification rather than dropping the message.
 - `router.py` is the only place that decides online vs. offline; other modules ask it, they don't probe the network themselves.
 - `FIRETOWER_MOCK=1` makes `board.py` serve `fixtures/mock_tickets.json` from memory instead of the real DB — lets the board/frontend be built and demoed against the real API shape before `db.py`/`triage.py` are implemented. Keep `fixtures/mock_tickets.json` in sync with the ticket schema above if you add a column.
-- Modules only do `logger = logging.getLogger(__name__)` and log their own decisions (model fallback, keyword net firing, priority floor applied, online/offline transitions). Only process entrypoints (`gateway.py` `main()`, `board.py` `startup()`) call `logging_config.setup_logging()`, so handlers are configured exactly once. Logs go to stdout and `data/firetower.log` (`LOG_PATH`/`LOG_LEVEL` env vars), which is gitignored.
+- Modules only do `logger = logging.getLogger(__name__)` and log their own decisions (model fallback, keyword net firing, priority floor applied, online/offline transitions). Only process entrypoints (`gateway.py` `main()`, `board.py` `startup()`) call `logging_config.setup_logging()`, so handlers are configured exactly once. Both files are UTF-8 and gitignored:
+  - `data/firetower.log` (`FIRETOWER_LOG_PATH`, `LOG_LEVEL`): Firetower's own lines plus library warnings. Every received text, every sent DM with its packet id, each delivery receipt (`Delivered` / `Relayed` / `Delivery FAILED`), extraction results, follow-up decisions, GPS attachment and board actions. Read this first.
+  - `data/firetower-debug.log` (`FIRETOWER_DEBUG_LOG_PATH`): everything at DEBUG, including raw Meshtastic frames, HTTP traffic and raw model output.
+- All outgoing radio text goes through `gateway._send_dm()`: DM only, `wantAck=True`, ASCII-only (`_radio_text()`), with an `onAckNak` callback that logs the delivery result. The callback must keep that exact name: Meshtastic only passes plain ACKs to a callback called `onAckNak`.
+- DigitalOcean agent endpoints reject `system` messages (HTTP 400). Send rules and context inside a `user` message; persona instructions live in the agent's dashboard configuration.
 - Run tests with `pytest` from the repo root (`pip install -r requirements.txt` first). `tests/test_triage.py` and `tests/test_router.py` mock the DigitalOcean client/`requests`/`db`, so they run with no live model or database.

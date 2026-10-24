@@ -150,6 +150,19 @@ class TestAnswer:
         contents = [message["content"] for message in calls[1]]
         assert "question one" in contents
         assert "First answer." in contents
+        assert calls[1][-1]["role"] == "user"
+        assert "Question: question two" in calls[1][-1]["content"]
+
+    def test_never_sends_system_messages(self, monkeypatch):
+        # DigitalOcean agent endpoints answer HTTP 400 to any system message.
+        calls = use_cloud(monkeypatch, ["First answer.", "Second answer."])
+
+        ai_assistant.answer("!asker", "question one")
+        ai_assistant.answer("!asker", "question two")
+
+        for messages in calls:
+            assert {message["role"] for message in messages} <= {"user", "assistant"}
+            assert "Channel history:" in messages[-1]["content"]
 
     def test_strips_leaked_thinking_trace(self, monkeypatch):
         use_cloud(monkeypatch, [

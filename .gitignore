@@ -9,3 +9,5 @@ data/*.db-shm
 data/*.log
 .pytest_cache/
 .DS_Store
+data/backup/
+data/facilities.json

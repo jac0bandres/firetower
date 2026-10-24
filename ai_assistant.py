@@ -125,20 +125,27 @@ def answer(node_id: str, question: str) -> str:
 
     history = db.list_ai_thread_messages(thread_id)
     context = build_channel_context()
-    messages = [{"role": "system", "content": (
+    # DigitalOcean agent endpoints reject system messages (HTTP 400: "agent
+    # instructions are set via agent configuration"), so the rules and the
+    # channel records ride along in the latest user message instead.
+    messages = [{"role": entry["role"], "content": entry["content"]} for entry in history[:-1]]
+    messages.append({"role": "user", "content": (
         f"{SYSTEM_PROMPT}\n\nThe asking radio node is {node_id}. "
-        f"Use that node's records when the sender asks about their own report.\n\nChannel history:\n{context}"
-    )}]
-    messages += [{"role": entry["role"], "content": entry["content"]} for entry in history]
+        f"Use that node's records when the sender asks about their own report.\n\n"
+        f"Channel history:\n{context}\n\nQuestion: {question}"
+    )})
 
     reply_text = None
     if _cloud_configured() and router.is_online():
         label = "digitalocean:" + DIGITALOCEAN_MODEL
         try:
-            reply_text = _strip_thinking(_call_cloud(messages))
+            raw = _call_cloud(messages)
+            logger.debug("ai_assistant raw model output: %r", raw)
+            reply_text = _strip_thinking(raw)
             if not reply_text:
                 raise ValueError("Model returned an empty answer")
-            logger.info("ai_assistant reply tier=%s node_id=%s thread_id=%s", label, node_id, thread_id)
+            logger.info("ai_assistant reply tier=%s node_id=%s thread_id=%s question=%r reply=%r",
+                        label, node_id, thread_id, question, reply_text)
         except Exception:
             logger.warning("ai_assistant tier failed tier=%s node_id=%s", label, node_id, exc_info=True)
     else:

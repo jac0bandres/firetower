@@ -20,7 +20,7 @@
     <div class="incident-clock" aria-label="Incident clock">
       <div><small>Local</small><strong id="clock-local">--:--:--</strong></div>
       <div><small>UTC</small><strong id="clock-utc">--:--Z</strong></div>
-      <div><small>Since first report</small><strong id="clock-elapsed">T+ --:--</strong></div>
+      <div><small>Since first report</small><strong id="clock-elapsed">T+ --</strong></div>
     </div>
     <div class="header-status">
       <span id="mock-badge" class="pill pill-demo" hidden>Demo data</span>
@@ -62,7 +62,7 @@
         <span class="emergency-mark" aria-hidden="true">!</span>
         <div>
           <h2 id="emergency-heading">0 emergency reports waiting for dispatch</h2>
-          <p>Oldest first. Teams are chosen from the report and saved on the ticket. No call is placed.</p>
+          <p>Oldest first. Teams are chosen from the report; dispatching saves them on the ticket and tells the sender by radio. No call is placed.</p>
         </div>
         <span class="emergency-toggle" aria-hidden="true"></span>
       </summary>
@@ -109,6 +109,8 @@
               <span><i class="legend-dot priority"></i>Priority</span>
               <span><i class="legend-dot welfare"></i>Welfare</span>
               <span><i class="legend-dot routine"></i>Routine</span>
+              <span><i class="legend-unit"></i>Dispatched team (simulated)</span>
+              <span>F / H / P: fire, hospital, police</span>
             </div>
           </div>
           <div class="map-footer">

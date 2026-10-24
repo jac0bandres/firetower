@@ -52,6 +52,7 @@ def test_attachment_changes_only_position_snapshot_on_exact_ticket():
         "longitude": -84.4,
         "position_received_at": "2026-10-24T18:00:05+00:00",
         "position_packet_json": '{"decoded":{"replyId":100},"rxTime":1792862405}',
+        "location_source": "gps",
     }]
 
 

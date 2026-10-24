@@ -64,10 +64,12 @@ class PacketTests(unittest.TestCase):
         snapshot = json.loads(rows[0]["meshtastic_packet_json"])
         self.assertEqual(snapshot["decoded"]["payload"]["encoding"], "base64")
         self.assertNotIn("raw", snapshot)
-        self.assertEqual(self.interface.sent, [
-            (f"{gateway.GATEWAY_NAME} FT-0001 received; EMERGENCY; queued for coordinator review.",
-             {"destinationId": self.sender, "channelIndex": 0})
-        ])
+        self.assertEqual(len(self.interface.sent), 1)
+        text, kwargs = self.interface.sent[0]
+        self.assertEqual(
+            text, f"{gateway.GATEWAY_NAME} FT-0001 received; EMERGENCY; queued for coordinator review.")
+        self.assertEqual((kwargs["destinationId"], kwargs["channelIndex"], kwargs["wantAck"]),
+                         (self.sender, 0, True))
 
     def test_radio_clock_skew_does_not_expire_newly_received_gps(self):
         stale_radio_time = int((datetime.now(timezone.utc) - timedelta(hours=2)).timestamp())
@@ -83,12 +85,20 @@ class PacketTests(unittest.TestCase):
         )
         self.assertEqual(json.loads(position["meshtastic_packet_json"])["rxTime"], stale_radio_time)
 
-    def test_missing_or_stale_position_does_not_pin_ticket(self):
+    def test_missing_position_does_not_pin_ticket(self):
+        with patch.object(gateway.triage, "triage", return_value=TriageResult(urgency="ROUTINE")):
+            gateway.on_receive(self.text_packet, self.interface)
+        self.assertIsNone(db.list_tickets()[0]["latitude"])
+
+    def test_stale_position_pins_ticket_as_an_approximation(self):
         db.save_node_position(self.sender, 35.6, -82.5,
                               "2020-01-01T00:00:00+00:00", "{}")
         with patch.object(gateway.triage, "triage", return_value=TriageResult(urgency="ROUTINE")):
             gateway.on_receive(self.text_packet, self.interface)
-        self.assertIsNone(db.list_tickets()[0]["latitude"])
+        ticket = db.list_tickets()[0]
+        self.assertEqual((ticket["latitude"], ticket["longitude"]), (35.6, -82.5))
+        self.assertEqual(ticket["position_received_at"], "2020-01-01T00:00:00+00:00")
+        self.assertFalse(gateway._has_fresh_gps(ticket))
 
     def make_simulator_packet(self, reply_id=42, latitude=35.6, longitude=-82.5):
         decoded = {
@@ -146,13 +156,16 @@ class PacketTests(unittest.TestCase):
             self.assertEqual(ticket[field], original[field])
         self.assertEqual(db.get_node_position(self.sender)["latitude"], 36.1)
 
-    def test_simulator_without_reply_id_only_saves_node_position(self):
+    def test_simulator_without_reply_id_attaches_to_newest_recent_ticket(self):
         with patch.object(gateway.triage, "triage", return_value=TriageResult(urgency="ROUTINE")):
             gateway.on_receive(self.text_packet, self.interface)
+            gateway.on_receive(dict(self.text_packet, id=99), self.interface)
 
         gateway.on_simulator_position(self.make_simulator_packet(reply_id=None), self.interface)
 
-        self.assertIsNone(db.list_tickets()[0]["latitude"])
+        tickets = {ticket["ticket_code"]: ticket for ticket in db.list_tickets()}
+        self.assertIsNone(tickets["FT-0001"]["latitude"])
+        self.assertEqual(tickets["FT-0002"]["latitude"], 35.6)
         self.assertIsNotNone(db.get_node_position(self.sender))
 
     def test_non_text_and_own_packets_are_ignored(self):
