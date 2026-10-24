@@ -55,10 +55,30 @@ pip install -r requirements.txt
 cp .env.example .env
 ollama pull qwen3:4b
 
-python db.py                 # creates data/firetower.db
-uvicorn board:app --reload   # coordinator board at http://localhost:8000
+python db.py                 # creates data/firetower.db for live mode
+FIRETOWER_MOCK=1 uvicorn board:app --reload  # demo board with North Georgia GPS pins
 python gateway.py            # gateway (needs a Meshtastic node on USB)
 ```
+
+The board defaults to the real SQLite database (`FIRETOWER_MOCK=0`). Use
+`FIRETOWER_MOCK=1` to preview the synthetic tickets and map positions.
+
+The gateway listens for Meshtastic `TEXT_MESSAGE_APP` and `POSITION_APP` packets
+on `FIRETOWER_CHANNEL_INDEX`. Configure that channel with a private PSK on the
+radios. Tickets retain a JSON snapshot of the text packet and, when a position
+packet from the same node was received within 30 minutes, its coordinates and
+position packet. Tickets without a recent position have null coordinates.
+`fixtures/mock_meshtastic_packets.json` contains synthetic Meshtastic position
+and text packets for local development; they are not captured radio
+transmissions. Mock GPS positions are clustered in North Georgia and exist only
+to demonstrate the map.
+
+The board's topographic map plots only tickets with sender GPS coordinates.
+It uses OpenFreeMap for streets and labels, with Mapterhorn hillshade and
+contours. The map JavaScript and CSS are bundled under `static/vendor/`, but
+the map tiles require internet unless a local tile source is configured.
+`FIRETOWER_MOCK=1` includes synthetic GPS positions for every ticket to
+demonstrate the map.
 
 ## What this is not
 

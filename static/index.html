@@ -2,33 +2,76 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Firetower — Coordinator Board</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
-    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-bottom: 1px solid #333; }
-    #banner { padding: 0.5rem 1.5rem; font-weight: 600; }
-    #banner.online { background: #1b4d2e; }
-    #banner.offline { background: #5c1a1a; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 0.6rem 1.5rem; border-bottom: 1px solid #222; }
-    .EMERGENCY { color: #ff5c5c; font-weight: 700; }
-    .PRIORITY { color: #ffb84d; font-weight: 700; }
-    .WELFARE { color: #6fc3ff; }
-    .ROUTINE { color: #9a9a9a; }
-  </style>
+  <link rel="stylesheet" href="/static/vendor/maplibre-gl.css" />
+  <link rel="stylesheet" href="/static/board.css" />
 </head>
 <body>
-  <header>
-    <h1>Firetower</h1>
-    <span id="banner">checking link...</span>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">MESHTASTIC COORDINATOR BOARD</p>
+      <h1>Firetower</h1>
+    </div>
+    <div class="header-status">
+      <span id="mock-badge" class="badge badge-demo" hidden>DEMO DATA</span>
+      <span id="banner" class="badge badge-checking" role="status">CHECKING LINK</span>
+    </div>
   </header>
-  <table>
-    <thead>
-      <tr><th>Ticket</th><th>Urgency</th><th>Node</th><th>What</th><th>Where</th><th>Hurt</th><th>Status</th></tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
 
-  <script src="/static/board.js"></script>
+  <main class="dashboard">
+    <section class="map-panel panel" aria-labelledby="map-heading">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">FIELD VIEW</p>
+          <h2 id="map-heading">Topographic map</h2>
+          <p class="subheading">Pins show sender radio positions. An incident may be elsewhere.</p>
+        </div>
+        <button id="fit-map" type="button" disabled>Fit located tickets</button>
+      </div>
+      <div class="map-frame">
+        <div id="map" aria-label="Map of tickets with known sender positions"></div>
+        <div id="map-message" class="map-message" role="status">Loading map…</div>
+        <div id="map-empty" class="map-empty" role="status" hidden></div>
+        <div class="map-legend" aria-label="Ticket urgency legend">
+          <span><i class="legend-dot emergency"></i>Emergency</span>
+          <span><i class="legend-dot priority"></i>Priority</span>
+          <span><i class="legend-dot welfare"></i>Welfare</span>
+          <span><i class="legend-dot routine"></i>Routine</span>
+        </div>
+      </div>
+      <div class="map-footer">
+        <span id="map-summary">Waiting for tickets…</span>
+        <span class="map-source">OpenFreeMap · Mapterhorn terrain</span>
+      </div>
+    </section>
+
+    <section class="tickets-panel panel" aria-labelledby="tickets-heading">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">LIVE QUEUE</p>
+          <h2 id="tickets-heading">Tickets <span id="ticket-count" class="count">0</span></h2>
+        </div>
+        <span id="last-updated" class="last-updated">Waiting for updates…</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Ticket</th><th scope="col">Urgency</th>
+              <th scope="col">Node</th><th scope="col">What</th>
+              <th scope="col">Reported location</th><th scope="col">Hurt</th>
+              <th scope="col">Status</th><th scope="col">Map</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p id="table-note" class="table-note">Tickets without radio GPS remain in this queue.</p>
+    </section>
+  </main>
+
+  <script src="/static/vendor/maplibre-contour.min.js"></script>
+  <script type="module" src="/static/board.js"></script>
 </body>
 </html>

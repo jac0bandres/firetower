@@ -118,6 +118,11 @@ CREATE TABLE tickets (
     raised_by_keyword INTEGER NOT NULL DEFAULT 0,
     priority_floor_applied INTEGER NOT NULL DEFAULT 0,
     hop_count INTEGER,
+    latitude REAL,                       -- recent position packet snapshot
+    longitude REAL,
+    position_received_at TEXT,
+    position_packet_json TEXT,
+    meshtastic_packet_json TEXT,         -- received text packet snapshot
     status TEXT NOT NULL DEFAULT 'open',    -- open | assigned | closed
     assigned_at TEXT,
     synced_to_snowflake INTEGER NOT NULL DEFAULT 0
@@ -131,6 +136,14 @@ CREATE TABLE priority_nodes (
 CREATE TABLE seen_packets (
     packet_id TEXT PRIMARY KEY,
     first_seen_at TEXT NOT NULL             -- dedupe window: 120s
+);
+
+CREATE TABLE node_positions (
+    node_id TEXT PRIMARY KEY,
+    latitude REAL NOT NULL,
+    longitude REAL NOT NULL,
+    received_at TEXT NOT NULL,
+    meshtastic_packet_json TEXT NOT NULL
 );
 ```
 
@@ -149,6 +162,11 @@ if it fires, the ticket is tagged `raised_by_keyword` and shown on the board.
 - Payload limit is **bytes**, not characters: ≤ 200 bytes per chunk, UTF-8, no emoji; max 3 chunks ~3s apart.
 - Reply by DM only; never broadcast; never process our own node's messages or anything starting `FT `.
 - Dedupe by packet id for ≥ 120s (`seen_packets`).
+- Text and GPS positions arrive as separate Meshtastic packets. Subscribe to
+  `meshtastic.receive.text` and `meshtastic.receive.position`, join by `fromId`,
+  and attach only a recent known position. Preserve packet dictionaries as JSON
+  after removing protobuf `raw` objects and encoding byte payloads. Leave
+  tickets without coordinates unpinned on maps.
 - Use our own channel + PSK, never the default public channel. Gateway node name should contain "bot".
 
 ## Hard rules

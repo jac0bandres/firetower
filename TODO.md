@@ -7,16 +7,18 @@ without waiting on the radio pipeline or the model.
 
 ## Radio pipeline (`gateway.py`, `db.py`)
 
-- [ ] Implement `db.py` CRUD: `init_db`, `is_duplicate_packet`, `mark_packet_seen`,
+- [x] Implement `db.py` CRUD: `init_db`, `is_duplicate_packet`, `mark_packet_seen`,
       `next_ticket_code`, `insert_ticket`, `list_tickets`, `set_ticket_status`,
       `list_priority_nodes`, `set_priority_node` — against the schema in CLAUDE.md.
-- [ ] Implement `gateway.py` `on_receive`: parse the Meshtastic packet dict
-      (`decoded.text`, `id`, `from`, `hopStart`/`hopLimit`), dedupe via
-      `db.is_duplicate_packet`, ignore our own node + `FT `-prefixed messages,
-      call `triage.triage()`, insert the ticket.
-- [ ] Implement `gateway.py` `send_ack`: DM the ticket code back to the sender,
-      `FT ` prefix, chunked to ≤200 bytes UTF-8, max 3 chunks ~3s apart, never
-      broadcast.
+- [x] Implement `gateway.py` `on_receive`: parse Meshtastic text packets
+      (`decoded.text`, `id`, `fromId`, `hopStart`/`hopLimit`), dedupe per sender
+      and packet id, ignore our own node and `FT `-prefixed messages, triage and
+      insert tickets. Handle separate position packets and preserve both packet
+      snapshots.
+- [x] Implement `gateway.py` `send_ack`: DM the ticket code back to the sender,
+      with `FT ` prefix, within the ≤200-byte UTF-8 limit, never broadcast.
+- [x] Store Meshtastic text and position packet snapshots; populate North
+      Georgia demo GPS positions for every mock ticket.
 
 ## Intelligence (`triage.py`, `router.py`)
 
@@ -39,6 +41,11 @@ without waiting on the radio pipeline or the model.
 
 ## Board (`board.py`, `static/`)
 
+- [x] Add a map that pins tickets with `latitude`/`longitude`, shows the
+      position timestamp, and leaves unlocated tickets in the table. OpenFreeMap
+      supplies the vector map and Mapterhorn supplies terrain and contours. Mock
+      tickets have synthetic North Georgia positions; map tiles need an online
+      tile source.
 - [ ] Swap `board.py` off `FIRETOWER_MOCK` once `db.py` is live: verify the
       real `db.*` calls return the exact same shape as
       `fixtures/mock_tickets.json`, then demo with `FIRETOWER_MOCK=0`.

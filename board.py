@@ -11,9 +11,12 @@ import json
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+load_dotenv()
 
 import db
 import router
@@ -26,7 +29,10 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 _mock_tickets: list[dict] = []
-_mock_priority_nodes: dict[str, str] = {"Main St": "registered medical need", "Shelter": "shelter lead"}
+_mock_priority_nodes: dict[str, str] = {
+    "!a1b2c3d4": "registered medical need",
+    "!a1b2c3d7": "shelter lead",
+}
 
 
 @app.on_event("startup")
@@ -46,7 +52,7 @@ def index():
 
 @app.get("/api/status")
 def status():
-    return {"online": True if MOCK_MODE else router.is_online()}
+    return {"online": True if MOCK_MODE else router.is_online(), "mock": MOCK_MODE}
 
 
 @app.get("/api/tickets")

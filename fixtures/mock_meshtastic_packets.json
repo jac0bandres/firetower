@@ -1,0 +1,218 @@
+[
+  {
+    "from": 2712847316,
+    "fromId": "!a1b2c3d4",
+    "id": 3901,
+    "channel": 0,
+    "rxTime": 1792850500,
+    "decoded": {
+      "portnum": "POSITION_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "DYD+rRQV/NKkzbgBIA=="
+      },
+      "position": {
+        "latitudeI": 346947200,
+        "longitudeI": -844836100,
+        "precisionBits": 32
+      }
+    }
+  },
+  {
+    "from": 2712847316,
+    "fromId": "!a1b2c3d4",
+    "id": 4001,
+    "channel": 0,
+    "rxTime": 1792850531,
+    "hopStart": 3,
+    "hopLimit": 1,
+    "decoded": {
+      "portnum": "TEXT_MESSAGE_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "YnJpZGdlIG9uIDUyIHdhc2hlZCBvdXQsIGNhciBpbiB0aGUgd2F0ZXIsIDIgcGVvcGxlIHRyYXBwZWQ="
+      },
+      "text": "bridge on 52 washed out, car in the water, 2 people trapped"
+    }
+  },
+  {
+    "from": 2712847317,
+    "fromId": "!a1b2c3d5",
+    "id": 3902,
+    "channel": 0,
+    "rxTime": 1792850716,
+    "decoded": {
+      "portnum": "POSITION_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "DYh8yBQVVKO9zbgBIA=="
+      },
+      "position": {
+        "latitudeI": 348683400,
+        "longitudeI": -843209900,
+        "precisionBits": 32
+      }
+    }
+  },
+  {
+    "from": 2712847317,
+    "fromId": "!a1b2c3d5",
+    "id": 4002,
+    "channel": 0,
+    "rxTime": 1792850747,
+    "hopStart": 4,
+    "hopLimit": 1,
+    "decoded": {
+      "portnum": "TEXT_MESSAGE_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "bmVlZCBpbnN1bGluIHNvb24sIHJ1bm5pbmcgbG93LCBjYW50IGdldCB0byB0b3du"
+      },
+      "text": "need insulin soon, running low, cant get to town"
+    }
+  },
+  {
+    "from": 2712847318,
+    "fromId": "!a1b2c3d6",
+    "id": 3903,
+    "channel": 0,
+    "rxTime": 1792850852,
+    "decoded": {
+      "portnum": "POSITION_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "DcAfthQVwIeuzbgBIA=="
+      },
+      "position": {
+        "latitudeI": 347480000,
+        "longitudeI": -844200000,
+        "precisionBits": 32
+      }
+    }
+  },
+  {
+    "from": 2712847318,
+    "fromId": "!a1b2c3d6",
+    "id": 4003,
+    "channel": 0,
+    "rxTime": 1792850883,
+    "hopStart": 2,
+    "hopLimit": 1,
+    "decoded": {
+      "portnum": "TEXT_MESSAGE_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "d2UncmUgb2ssIG5vIHBvd2VyLCBjaGVja2luZyBpbg=="
+      },
+      "text": "we're ok, no power, checking in"
+    }
+  },
+  {
+    "from": 2712847319,
+    "fromId": "!a1b2c3d7",
+    "id": 3904,
+    "channel": 0,
+    "rxTime": 1792851058,
+    "decoded": {
+      "portnum": "POSITION_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "DXjerRQVyBWlzbgBIA=="
+      },
+      "position": {
+        "latitudeI": 346939000,
+        "longitudeI": -844819000,
+        "precisionBits": 32
+      }
+    }
+  },
+  {
+    "from": 2712847319,
+    "fromId": "!a1b2c3d7",
+    "id": 4004,
+    "channel": 0,
+    "rxTime": 1792851089,
+    "hopStart": 1,
+    "hopLimit": 1,
+    "decoded": {
+      "portnum": "TEXT_MESSAGE_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "ZmlyZSBpbiB0aGUgc2hlbHRlciBraXRjaGVuLCBzcHJlYWRpbmcgdG8gc3VwcGx5IHJvb20="
+      },
+      "text": "fire in the shelter kitchen, spreading to supply room"
+    }
+  },
+  {
+    "from": 2712847320,
+    "fromId": "!a1b2c3d8",
+    "id": 3905,
+    "channel": 0,
+    "rxTime": 1792851261,
+    "decoded": {
+      "portnum": "POSITION_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "Dbj4mRQVwGLJzbgBIA=="
+      },
+      "position": {
+        "latitudeI": 345635000,
+        "longitudeI": -842440000,
+        "precisionBits": 32
+      }
+    }
+  },
+  {
+    "from": 2712847320,
+    "fromId": "!a1b2c3d8",
+    "id": 4005,
+    "channel": 0,
+    "rxTime": 1792851292,
+    "hopStart": 5,
+    "hopLimit": 1,
+    "decoded": {
+      "portnum": "TEXT_MESSAGE_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "d2hlbiBpcyB0aGUgbmV4dCBzdXBwbHkgZHJvcA=="
+      },
+      "text": "when is the next supply drop"
+    }
+  },
+  {
+    "from": 2712847316,
+    "fromId": "!a1b2c3d4",
+    "id": 3906,
+    "channel": 0,
+    "rxTime": 1792851454,
+    "decoded": {
+      "portnum": "POSITION_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "DWg0rhQVAGClzbgBIA=="
+      },
+      "position": {
+        "latitudeI": 346961000,
+        "longitudeI": -844800000,
+        "precisionBits": 32
+      }
+    }
+  },
+  {
+    "from": 2712847316,
+    "fromId": "!a1b2c3d4",
+    "id": 4006,
+    "channel": 0,
+    "rxTime": 1792851485,
+    "hopStart": 3,
+    "hopLimit": 1,
+    "decoded": {
+      "portnum": "TEXT_MESSAGE_APP",
+      "payload": {
+        "encoding": "base64",
+        "data": "dHdpc3RlZCBteSBhbmtsZSwgY2FuIHN0aWxsIHdhbGssIG5vdCB1cmdlbnQ="
+      },
+      "text": "twisted my ankle, can still walk, not urgent"
+    }
+  }
+]

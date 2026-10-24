@@ -1,8 +1,8 @@
 [
   {
     "ticket_code": "FT-0001",
-    "node_id": "Main St",
-    "packet_id": "mock-0001",
+    "node_id": "!a1b2c3d4",
+    "packet_id": "4001",
     "received_at": "2026-10-24T14:02:11Z",
     "raw_text": "bridge on 52 washed out, car in the water, 2 people trapped",
     "urgency": "EMERGENCY",
@@ -12,14 +12,19 @@
     "raised_by_keyword": false,
     "priority_floor_applied": true,
     "hop_count": 2,
+    "latitude": 34.69472,
+    "longitude": -84.48361,
+    "position_received_at": "2026-10-24T14:01:40Z",
+    "meshtastic_packet_json": "{\"from\":2712847316,\"fromId\":\"!a1b2c3d4\",\"id\":4001,\"channel\":0,\"rxTime\":1792850531,\"hopStart\":3,\"hopLimit\":1,\"decoded\":{\"portnum\":\"TEXT_MESSAGE_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"YnJpZGdlIG9uIDUyIHdhc2hlZCBvdXQsIGNhciBpbiB0aGUgd2F0ZXIsIDIgcGVvcGxlIHRyYXBwZWQ=\"},\"text\":\"bridge on 52 washed out, car in the water, 2 people trapped\"}}",
     "status": "open",
     "assigned_at": null,
-    "synced_to_snowflake": false
+    "synced_to_snowflake": false,
+    "position_packet_json": "{\"from\":2712847316,\"fromId\":\"!a1b2c3d4\",\"id\":3901,\"channel\":0,\"rxTime\":1792850500,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DYD+rRQV/NKkzbgBIA==\"},\"position\":{\"latitudeI\":346947200,\"longitudeI\":-844836100,\"precisionBits\":32}}}"
   },
   {
     "ticket_code": "FT-0002",
-    "node_id": "Ridge Camp",
-    "packet_id": "mock-0002",
+    "node_id": "!a1b2c3d5",
+    "packet_id": "4002",
     "received_at": "2026-10-24T14:05:47Z",
     "raw_text": "need insulin soon, running low, cant get to town",
     "urgency": "PRIORITY",
@@ -29,14 +34,19 @@
     "raised_by_keyword": true,
     "priority_floor_applied": false,
     "hop_count": 3,
+    "latitude": 34.86834,
+    "longitude": -84.32099,
+    "position_received_at": "2026-10-24T14:05:16Z",
+    "meshtastic_packet_json": "{\"from\":2712847317,\"fromId\":\"!a1b2c3d5\",\"id\":4002,\"channel\":0,\"rxTime\":1792850747,\"hopStart\":4,\"hopLimit\":1,\"decoded\":{\"portnum\":\"TEXT_MESSAGE_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"bmVlZCBpbnN1bGluIHNvb24sIHJ1bm5pbmcgbG93LCBjYW50IGdldCB0byB0b3du\"},\"text\":\"need insulin soon, running low, cant get to town\"}}",
     "status": "open",
     "assigned_at": null,
-    "synced_to_snowflake": false
+    "synced_to_snowflake": false,
+    "position_packet_json": "{\"from\":2712847317,\"fromId\":\"!a1b2c3d5\",\"id\":3902,\"channel\":0,\"rxTime\":1792850716,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DYh8yBQVVKO9zbgBIA==\"},\"position\":{\"latitudeI\":348683400,\"longitudeI\":-843209900,\"precisionBits\":32}}}"
   },
   {
     "ticket_code": "FT-0003",
-    "node_id": "Oak Ridge Rd",
-    "packet_id": "mock-0003",
+    "node_id": "!a1b2c3d6",
+    "packet_id": "4003",
     "received_at": "2026-10-24T14:08:03Z",
     "raw_text": "we're ok, no power, checking in",
     "urgency": "WELFARE",
@@ -46,14 +56,19 @@
     "raised_by_keyword": false,
     "priority_floor_applied": false,
     "hop_count": 1,
+    "latitude": 34.748,
+    "longitude": -84.42,
+    "position_received_at": "2026-10-24T14:07:32Z",
+    "meshtastic_packet_json": "{\"from\":2712847318,\"fromId\":\"!a1b2c3d6\",\"id\":4003,\"channel\":0,\"rxTime\":1792850883,\"hopStart\":2,\"hopLimit\":1,\"decoded\":{\"portnum\":\"TEXT_MESSAGE_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"d2UncmUgb2ssIG5vIHBvd2VyLCBjaGVja2luZyBpbg==\"},\"text\":\"we're ok, no power, checking in\"}}",
     "status": "open",
     "assigned_at": null,
-    "synced_to_snowflake": false
+    "synced_to_snowflake": false,
+    "position_packet_json": "{\"from\":2712847318,\"fromId\":\"!a1b2c3d6\",\"id\":3903,\"channel\":0,\"rxTime\":1792850852,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DcAfthQVwIeuzbgBIA==\"},\"position\":{\"latitudeI\":347480000,\"longitudeI\":-844200000,\"precisionBits\":32}}}"
   },
   {
     "ticket_code": "FT-0004",
-    "node_id": "Shelter",
-    "packet_id": "mock-0004",
+    "node_id": "!a1b2c3d7",
+    "packet_id": "4004",
     "received_at": "2026-10-24T14:11:29Z",
     "raw_text": "fire in the shelter kitchen, spreading to supply room",
     "urgency": "EMERGENCY",
@@ -63,14 +78,19 @@
     "raised_by_keyword": false,
     "priority_floor_applied": true,
     "hop_count": 0,
+    "latitude": 34.6939,
+    "longitude": -84.4819,
+    "position_received_at": "2026-10-24T14:10:58Z",
+    "meshtastic_packet_json": "{\"from\":2712847319,\"fromId\":\"!a1b2c3d7\",\"id\":4004,\"channel\":0,\"rxTime\":1792851089,\"hopStart\":1,\"hopLimit\":1,\"decoded\":{\"portnum\":\"TEXT_MESSAGE_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"ZmlyZSBpbiB0aGUgc2hlbHRlciBraXRjaGVuLCBzcHJlYWRpbmcgdG8gc3VwcGx5IHJvb20=\"},\"text\":\"fire in the shelter kitchen, spreading to supply room\"}}",
     "status": "assigned",
     "assigned_at": "2026-10-24T14:12:40Z",
-    "synced_to_snowflake": false
+    "synced_to_snowflake": false,
+    "position_packet_json": "{\"from\":2712847319,\"fromId\":\"!a1b2c3d7\",\"id\":3904,\"channel\":0,\"rxTime\":1792851058,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DXjerRQVyBWlzbgBIA==\"},\"position\":{\"latitudeI\":346939000,\"longitudeI\":-844819000,\"precisionBits\":32}}}"
   },
   {
     "ticket_code": "FT-0005",
-    "node_id": "Trailhead",
-    "packet_id": "mock-0005",
+    "node_id": "!a1b2c3d8",
+    "packet_id": "4005",
     "received_at": "2026-10-24T14:14:52Z",
     "raw_text": "when is the next supply drop",
     "urgency": "ROUTINE",
@@ -80,14 +100,19 @@
     "raised_by_keyword": false,
     "priority_floor_applied": false,
     "hop_count": 4,
+    "latitude": 34.5635,
+    "longitude": -84.244,
+    "position_received_at": "2026-10-24T14:14:21Z",
+    "meshtastic_packet_json": "{\"from\":2712847320,\"fromId\":\"!a1b2c3d8\",\"id\":4005,\"channel\":0,\"rxTime\":1792851292,\"hopStart\":5,\"hopLimit\":1,\"decoded\":{\"portnum\":\"TEXT_MESSAGE_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"d2hlbiBpcyB0aGUgbmV4dCBzdXBwbHkgZHJvcA==\"},\"text\":\"when is the next supply drop\"}}",
     "status": "open",
     "assigned_at": null,
-    "synced_to_snowflake": false
+    "synced_to_snowflake": false,
+    "position_packet_json": "{\"from\":2712847320,\"fromId\":\"!a1b2c3d8\",\"id\":3905,\"channel\":0,\"rxTime\":1792851261,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"Dbj4mRQVwGLJzbgBIA==\"},\"position\":{\"latitudeI\":345635000,\"longitudeI\":-842440000,\"precisionBits\":32}}}"
   },
   {
     "ticket_code": "FT-0006",
-    "node_id": "Main St",
-    "packet_id": "mock-0006",
+    "node_id": "!a1b2c3d4",
+    "packet_id": "4006",
     "received_at": "2026-10-24T14:18:05Z",
     "raw_text": "twisted my ankle, can still walk, not urgent",
     "urgency": "PRIORITY",
@@ -97,8 +122,13 @@
     "raised_by_keyword": false,
     "priority_floor_applied": true,
     "hop_count": 2,
+    "latitude": 34.6961,
+    "longitude": -84.48,
+    "position_received_at": "2026-10-24T14:17:34Z",
+    "meshtastic_packet_json": "{\"from\":2712847316,\"fromId\":\"!a1b2c3d4\",\"id\":4006,\"channel\":0,\"rxTime\":1792851485,\"hopStart\":3,\"hopLimit\":1,\"decoded\":{\"portnum\":\"TEXT_MESSAGE_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"dHdpc3RlZCBteSBhbmtsZSwgY2FuIHN0aWxsIHdhbGssIG5vdCB1cmdlbnQ=\"},\"text\":\"twisted my ankle, can still walk, not urgent\"}}",
     "status": "closed",
     "assigned_at": "2026-10-24T14:20:00Z",
-    "synced_to_snowflake": true
+    "synced_to_snowflake": true,
+    "position_packet_json": "{\"from\":2712847316,\"fromId\":\"!a1b2c3d4\",\"id\":3906,\"channel\":0,\"rxTime\":1792851454,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DWg0rhQVAGClzbgBIA==\"},\"position\":{\"latitudeI\":346961000,\"longitudeI\":-844800000,\"precisionBits\":32}}}"
   }
 ]
