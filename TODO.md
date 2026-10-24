@@ -20,20 +20,22 @@ without waiting on the radio pipeline or the model.
 
 ## Intelligence (`triage.py`, `router.py`)
 
-- [ ] Implement `triage.py` `keyword_floor` + `apply_priority_floor`:
+- [x] Implement `triage.py` `keyword_floor` + `apply_priority_floor`:
       `keyword_floor(text)` scans `EMERGENCY_KEYWORDS`/`PRIORITY_KEYWORDS` and
       returns a floor urgency or `None`. `apply_priority_floor(result, node_id)`
       checks `db.list_priority_nodes()` and never lets a priority node's ticket
       rank below `PRIORITY`.
-- [ ] Implement `triage.py` `extract_with_model` + `triage()`: call Ollama with
+- [x] Implement `triage.py` `extract_with_model` + `triage()`: call Ollama with
       `EXTRACTION_SCHEMA` (`format` param), `temperature=0`, `think=False`.
       Fall back to `TRIAGE_MODEL_BACKUP`, then keyword-only, on failure.
       `triage()` merges model output + `keyword_floor` + `apply_priority_floor`
       into the final `TriageResult`.
-- [ ] Implement `router.py` `is_online` + `sitrep_model`: `is_online()` probes
+- [x] Implement `router.py` `is_online` + `sitrep_model`: `is_online()` probes
       `HEALTHCHECK_HOST` with `HEALTHCHECK_TIMEOUT_SECONDS`, cached for
       `HEALTHCHECK_INTERVAL_SECONDS`. `sitrep_model()` returns the
       DigitalOcean/home-GPU tier when online, `TRIAGE_MODEL` when offline.
+      Covered by `tests/test_triage.py` + `tests/test_router.py` (23 tests,
+      all passing — Ollama/requests/db mocked, no live server needed).
 
 ## Board (`board.py`, `static/`)
 
