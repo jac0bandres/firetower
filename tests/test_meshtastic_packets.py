@@ -53,7 +53,7 @@ class PacketTests(unittest.TestCase):
     def test_position_then_text_snapshots_location_and_packet(self):
         gateway.on_position(self.position_packet, self.interface)
         with patch.object(gateway.triage, "triage", return_value=TriageResult(
-            urgency="EMERGENCY", what_happened="Camp fire")):
+            urgency="EMERGENCY", what_happened="Camp fire", location="Camp Road", injured_count=0)):
             gateway.on_receive(self.text_packet, self.interface)
             gateway.on_receive(self.text_packet, self.interface)
         rows = db.list_tickets()

@@ -159,6 +159,13 @@ CREATE TABLE ai_messages (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE pending_clarifications (
+    node_id TEXT PRIMARY KEY,
+    ticket_code TEXT NOT NULL,
+    missing_fields TEXT NOT NULL,           -- comma-separated: location,injured_count
+    created_at TEXT NOT NULL
+);
 ```
 
 Open in WAL mode (`PRAGMA journal_mode=WAL;`) since `board.py` polls while
@@ -184,6 +191,7 @@ if it fires, the ticket is tagged `raised_by_keyword` and shown on the board.
 - Use our own channel + PSK, never the default public channel. Gateway node name should contain "bot".
 - A message starting `!ai <question>` (case-insensitive) is routed to `ai_assistant.answer()` instead of triage — it never becomes a ticket. The reply goes out via `gateway.send_ai_reply()`, DM only, `AI ` prefix, chunked and capped at `AI_MAX_CHUNKS` (3) so one answer can't flood the mesh with airtime. Each sender gets one persistent `ai_threads` row (`db.get_or_create_ai_thread`), so follow-up `!ai` messages continue the same conversation; the model's context is the thread history plus every ticket triaged on the channel so far (`ai_assistant.build_channel_context()`, capped to `CONTEXT_TICKET_LIMIT`).
 - `qwen3:4b`'s `think=False` only reliably suppresses its reasoning trace on `format`-constrained calls (like `triage.py`'s extraction). Unconstrained chat calls (like `ai_assistant.py`'s) can still leak a `...</think>` block into `message.content` — strip everything up to and including the last `</think>` before using the reply.
+- A new EMERGENCY/PRIORITY ticket missing `location` or `injured_count` gets one follow-up DM (`gateway.send_ticket_note`, templated, not model-generated — deterministic and doesn't risk the thinking-leak bug on the critical path) and a row in `pending_clarifications`. The sender's *next* plain-text message (not `!ai`) is treated as the answer: `triage.extract_with_model()` runs on it, and only the fields that were missing get written onto the *same* ticket via `db.update_ticket_fields` — it never creates a second ticket. `!ai` always takes precedence over a pending clarification. Entries expire after `FIRETOWER_CLARIFICATION_TTL_SECONDS` (default 600s) so an unrelated message hours later isn't misread as the reply.
 
 ## Hard rules
 

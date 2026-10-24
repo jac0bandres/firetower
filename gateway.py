@@ -35,6 +35,8 @@ DEDUPE_WINDOW_SECONDS = 120
 MAX_CHUNK_BYTES = 200
 CHANNEL_INDEX = int(os.environ.get("FIRETOWER_CHANNEL_INDEX", "0"))
 MAX_POSITION_AGE_SECONDS = int(os.environ.get("FIRETOWER_MAX_POSITION_AGE_SECONDS", "1800"))
+CLARIFICATION_URGENCIES = {"EMERGENCY", "PRIORITY"}
+CLARIFICATION_TTL_SECONDS = int(os.environ.get("FIRETOWER_CLARIFICATION_TTL_SECONDS", "600"))
 
 
 def _accepted_packet(packet: dict, interface) -> bool:
@@ -96,6 +98,28 @@ def on_receive(packet, interface):
         send_ai_reply(sender, reply, interface, channel)
         return
 
+    channel = packet.get("channel", CHANNEL_INDEX)
+    pending = db.get_pending_clarification(sender, CLARIFICATION_TTL_SECONDS)
+    if pending is not None:
+        db.mark_packet_seen(dedupe_key)
+        db.clear_pending_clarification(sender)
+        extraction = triage.extract_with_model(message)
+        updates = {}
+        if "location" in pending["missing_fields"] and extraction.location:
+            updates["location"] = extraction.location
+        if "injured_count" in pending["missing_fields"] and extraction.injured_count is not None:
+            updates["injured_count"] = extraction.injured_count
+        if updates:
+            db.update_ticket_fields(pending["ticket_code"], **updates)
+            logger.info("Updated ticket %s from clarification by %s: %s",
+                        pending["ticket_code"], sender, updates)
+        note = "thanks, updated" if updates else "thanks, noted"
+        try:
+            send_ticket_note(sender, pending["ticket_code"], note, interface, channel)
+        except Exception:
+            logger.exception("Clarification confirmation to %s failed", sender)
+        return
+
     result = triage.triage(message, sender)
     latest_position = db.get_node_position(sender, MAX_POSITION_AGE_SECONDS)
     hop_count = packet.get("hopsAway")
@@ -124,9 +148,37 @@ def on_receive(packet, interface):
     db.mark_packet_seen(dedupe_key)
     logger.info("Stored ticket %s from %s at urgency %s", ticket_code, sender, result.urgency)
     try:
-        send_ack(sender, ticket_code, interface, packet["channel"])
+        send_ack(sender, ticket_code, interface, channel)
     except Exception:
         logger.exception("Ticket %s stored, but acknowledgment to %s failed", ticket_code, sender)
+
+    if result.urgency in CLARIFICATION_URGENCIES:
+        missing = _missing_fields(result)
+        if missing:
+            db.set_pending_clarification(sender, ticket_code, missing)
+            try:
+                send_ticket_note(sender, ticket_code, _clarification_question(missing), interface, channel)
+            except Exception:
+                logger.exception("Clarification question to %s failed", sender)
+
+
+def _missing_fields(result) -> list[str]:
+    missing = []
+    if not result.location:
+        missing.append("location")
+    if result.injured_count is None:
+        missing.append("injured_count")
+    return missing
+
+
+def _clarification_question(missing_fields: list[str]) -> str:
+    if "location" in missing_fields and "injured_count" in missing_fields:
+        return "Can you share your exact location and how many people are hurt?"
+    if "location" in missing_fields:
+        return "What is your exact location?"
+    if "injured_count" in missing_fields:
+        return "How many people are hurt?"
+    return "Can you share more details?"
 
 
 def on_position(packet, interface):
@@ -190,6 +242,32 @@ def send_ai_reply(node_id: str, reply: str, interface, channel_index: int = CHAN
     total = len(chunks) or 1
     for index, chunk in enumerate(chunks or [""], start=1):
         label = AI_PREFIX if total == 1 else f"{AI_PREFIX}({index}/{total}) "
+        interface.sendText(f"{label}{chunk}", destinationId=node_id, channelIndex=channel_index)
+        if index < total:
+            time.sleep(3)
+
+
+def send_ticket_note(node_id: str, ticket_code: str, note: str, interface,
+                      channel_index: int = CHANNEL_INDEX) -> None:
+    """A short DM tagged to a ticket — the follow-up clarification question or
+    the confirmation after the sender replies to one. Capped at AI_MAX_CHUNKS
+    like send_ai_reply, though in practice these are short enough for one."""
+    prefix = f"{ACK_PREFIX}{ticket_code}: "
+    reserve = len(prefix.encode("utf-8")) + len(f"({AI_MAX_CHUNKS}/{AI_MAX_CHUNKS}) ".encode("utf-8"))
+    budget = MAX_CHUNK_BYTES - reserve
+    chunks = _chunk_text(note.strip(), budget) or [""]
+
+    if len(chunks) > AI_MAX_CHUNKS:
+        chunks = chunks[:AI_MAX_CHUNKS]
+        marker = "…"
+        last = chunks[-1]
+        while last and len((last + marker).encode("utf-8")) > budget:
+            last = last[:-1]
+        chunks[-1] = (last + marker) if last else marker
+
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        label = prefix if total == 1 else f"{ACK_PREFIX}{ticket_code} ({index}/{total}): "
         interface.sendText(f"{label}{chunk}", destinationId=node_id, channelIndex=channel_index)
         if index < total:
             time.sleep(3)

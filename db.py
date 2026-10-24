@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS ai_messages (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pending_clarifications (
+    node_id TEXT PRIMARY KEY,
+    ticket_code TEXT NOT NULL,
+    missing_fields TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -244,6 +251,53 @@ def list_ai_thread_messages(thread_id: int) -> list[dict]:
             (thread_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def set_pending_clarification(node_id: str, ticket_code: str, missing_fields: list[str]) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO pending_clarifications(node_id, ticket_code, missing_fields, created_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET "
+            "ticket_code = excluded.ticket_code, missing_fields = excluded.missing_fields, "
+            "created_at = excluded.created_at",
+            (node_id, ticket_code, ",".join(missing_fields), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def get_pending_clarification(node_id: str, max_age_seconds: int = 600) -> dict | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM pending_clarifications WHERE node_id = ?", (node_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(row["created_at"])
+    if not (timedelta(0) <= age <= timedelta(seconds=max_age_seconds)):
+        return None
+    result = dict(row)
+    result["missing_fields"] = result["missing_fields"].split(",")
+    return result
+
+
+def clear_pending_clarification(node_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM pending_clarifications WHERE node_id = ?", (node_id,))
+        conn.commit()
+
+
+def update_ticket_fields(ticket_code: str, **fields) -> None:
+    allowed = {"location", "injured_count", "what_happened"}
+    updates = {key: value for key, value in fields.items() if key in allowed}
+    if not updates:
+        return
+    set_clause = ", ".join(f"{key} = ?" for key in updates)
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE tickets SET {set_clause} WHERE ticket_code = ?",
+            (*updates.values(), ticket_code),
+        )
+        conn.commit()
 
 
 if __name__ == "__main__":

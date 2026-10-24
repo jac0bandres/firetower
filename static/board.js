@@ -199,14 +199,22 @@ function renderRows(tickets) {
 function emergencyScript(ticket) {
   const report = ticket.what_happened || ticket.raw_text || "Details not provided";
   const place = ticket.location || "Location not provided";
+  const coords = coordinates(ticket);
+  const gpsLine = coords
+    ? ` The sender radio's last known GPS position is ${coords[1].toFixed(5)}, ${coords[0].toFixed(5)} — this may not be the exact incident location.`
+    : " No GPS position is available for the sender's radio.";
   const people = Number.isInteger(ticket.injured_count)
     ? `The report mentions ${ticket.injured_count} injured ${ticket.injured_count === 1 ? "person" : "people"}.`
     : "The number of injured people is unknown.";
-  return `I am calling from a field coordination point. We received an emergency report, ticket ${ticket.ticket_code}. ${report}. The reported location is ${place}. ${people} The reporting radio node is ${ticket.node_id}. This is an unverified field report. Please advise and send assistance.`;
+  return `I am calling from a field coordination point. We received an emergency report, ticket ${ticket.ticket_code}. ${report}. The reported location is ${place}.${gpsLine} ${people} The reporting radio node is ${ticket.node_id}. This is an unverified field report. Please advise and send assistance.`;
 }
 
 function renderEmergencyCards(tickets) {
-  const emergencies = tickets.filter((ticket) => ticket.urgency === "EMERGENCY" && ticket.status === "open");
+  // Oldest open emergency first: the longest-waiting call is the one a
+  // coordinator working down this list should place next.
+  const emergencies = tickets
+    .filter((ticket) => ticket.urgency === "EMERGENCY" && ticket.status === "open")
+    .sort((a, b) => String(a.received_at).localeCompare(String(b.received_at)));
   elements.emergencyPanel.hidden = emergencies.length === 0;
   const fragment = document.createDocumentFragment();
 

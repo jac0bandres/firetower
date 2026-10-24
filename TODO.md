@@ -55,6 +55,11 @@ without waiting on the radio pipeline or the model.
 - [x] Add priority-node toggle UI: let the coordinator mark/unmark a node via
       `GET`/`POST`/`DELETE /api/priority_nodes`, show a "priority node: &lt;role&gt;" tag
       on matching tickets in the table.
+- [x] Improve the 911 call card: read-aloud script now includes the sender
+      radio's GPS coordinates (with a caveat it may not be the exact incident
+      site), and cards sort oldest-open-first instead of newest-first, so the
+      longest-waiting emergency is the one a coordinator sees first. Verified
+      live in the browser with two open EMERGENCY tickets.
 
 ## Intelligence — `!ai` assistant
 
@@ -65,6 +70,14 @@ without waiting on the radio pipeline or the model.
       `qwen3:4b` leaks its reasoning trace into unconstrained chat replies
       despite `think=False`; now stripped. Covered by
       `tests/test_ai_assistant.py` + `tests/test_gateway_ai.py` (14 tests).
+
+- [x] Clarification follow-up: a new EMERGENCY/PRIORITY ticket missing
+      location or injured_count gets one templated follow-up DM
+      (`pending_clarifications` table, expires after
+      `FIRETOWER_CLARIFICATION_TTL_SECONDS`). The sender's next plain-text
+      reply (not `!ai`) is extracted and merged into the *same* ticket, never
+      a new one. Verified live against the real model and a real SQLite DB,
+      not just mocked. `tests/test_gateway_clarification.py` (6 tests).
 
 ## Stretch (after the above, time permitting)
 
