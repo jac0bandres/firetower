@@ -14,6 +14,7 @@ from pubsub import pub
 
 import db
 import triage
+from logging_config import setup_logging
 
 MESHTASTIC_PORT = os.environ.get("MESHTASTIC_PORT")
 ACK_PREFIX = "FT "
@@ -30,6 +31,7 @@ def send_ack(node_id: str, ticket_code: str, interface) -> None:
 
 
 def main():
+    setup_logging()
     db.init_db()
     interface = meshtastic.serial_interface.SerialInterface(devPath=MESHTASTIC_PORT)
     pub.subscribe(on_receive, "meshtastic.receive.text")

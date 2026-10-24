@@ -6,4 +6,6 @@ venv/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.log
+.pytest_cache/
 .DS_Store

@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 import db
 import router
+from logging_config import setup_logging
 
 MOCK_MODE = os.environ.get("FIRETOWER_MOCK", "0") == "1"
 MOCK_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_tickets.json"
@@ -31,6 +32,7 @@ _mock_priority_nodes: dict[str, str] = {"Main St": "registered medical need", "S
 @app.on_event("startup")
 def startup():
     global _mock_tickets
+    setup_logging()
     if MOCK_MODE:
         _mock_tickets = json.loads(MOCK_FIXTURE_PATH.read_text())
     else:
