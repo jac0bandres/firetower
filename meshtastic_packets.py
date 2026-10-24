@@ -22,7 +22,10 @@ def received_at(packet: dict) -> str:
 
 
 def position(packet: dict) -> tuple[float, float] | None:
-    data = packet.get("decoded", {}).get("position", {})
+    decoded = packet.get("decoded")
+    if not isinstance(decoded, dict):
+        return None
+    data = decoded.get("position", {})
     if not isinstance(data, dict):
         return None
     if data.get("precisionBits") == 0:
