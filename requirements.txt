@@ -7,7 +7,6 @@ fastapi
 uvicorn[standard]
 requests
 python-dotenv
-snowflake-connector-python
 
 # dev / testing
 pytest

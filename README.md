@@ -1,19 +1,50 @@
 # Firetower
 
-Off-grid triage for when the towers go down.
+**Off-grid triage for when the towers go down.**
 
-People in the field text short messages over Meshtastic LoRa radios (no cell
-service or internet needed). A gateway laptop receives every message, and a
-DigitalOcean model ranks its urgency (EMERGENCY / PRIORITY / WELFARE
-/ ROUTINE) and pulls out where, what happened, and how many are hurt when
-that client is configured and online. The sender gets a ticket number back
-over the radio. A coordinator board shows everything sorted by urgency.
-With the internet unplugged, urgency falls back to a keyword net. No local
-model is called.
+When a storm takes out cell towers and internet, people still need to report
+emergencies, and someone still has to decide what to act on first. After
+Hurricane Helene, one North Carolina county received about 11,000 requests
+from people trying to find loved ones and had to sort them by hand.
 
-Other mesh AI projects answer the person who asked. Firetower sorts
-everyone's messages for the person who has to act, keeps working offline, and
-syncs when the link returns.
+Firetower lets people send short texts over low-cost Meshtastic LoRa radios
+(no cell service or internet needed). Each message reaches a gateway computer
+(a laptop for this prototype), where an open-weight model (OpenAI's
+gpt-oss-20b, served by DigitalOcean) ranks it as EMERGENCY, PRIORITY, WELFARE
+or ROUTINE and pulls out where it happened, what happened and how many people
+are hurt. The sender gets a ticket number back over the radio, every reply is
+confirmed delivered, and a coordinator board shows every report sorted by
+urgency as it comes in.
+
+When a report is missing a location or injury count, Firetower asks one short
+follow-up question over the radio and adds the answer to the same ticket. If
+the sender's radio has no GPS, it estimates where they are from the place they
+named, the radio's last known position, or which radio relayed the message,
+and marks the pin as an estimate. A keyword safety net catches urgent messages
+the model ranks too low (words like trapped, bleeding or insulin), and
+messages from priority nodes (shelters, households with a registered medical
+need) are never ranked below Priority. A ticket closes only when the sender
+says the situation is over, so "nobody hurt" never closes an active fire.
+
+When the coordinator dispatches fire, police, EMS or rescue, Firetower radios
+the reporter which teams are coming, and the map shows nearby fire stations,
+hospitals and police stations with a simulated drive from the nearest one.
+Firetower never dials 911 or contacts a department itself; a person makes that
+call.
+
+With the internet unplugged, Firetower keeps taking reports: the keyword net
+ranks urgency, tickets are stored on the gateway, and the board keeps working.
+The model's extraction and follow-up wording return when the link does.
+
+In a real deployment, the laptop would be replaced by a rugged, low-power
+computer such as an NVIDIA Jetson Orin, running on solar and battery power. It
+would sit at a fixed site like a fire station or shelter, with a high-gain
+antenna on a mast for better range. Because gpt-oss-20b is open-weight, a box
+like that could also run the model on site, so full triage works with no
+internet at all.
+
+**Built with:** Meshtastic, Python, FastAPI, SQLite, DigitalOcean
+(gpt-oss-20b), MapLibre, OpenStreetMap (Nominatim, Overpass, OSRM).
 
 See [CLAUDE.md](CLAUDE.md) for the full architecture, schema, and dev setup.
 
@@ -34,15 +65,14 @@ flowchart TD
     BOARD --> R["router.py\nonline/offline probe"]
     R -->|online| CLOUD
 
-    DB -.->|"when online"| S["sync.py"]
-    S -.-> SF[("Snowflake")]
-
     BOARD -->|"in-app dispatch\nfire, police, ems, rescue"| DB
 ```
 
 Open emergency reports show the teams chosen from the report (fire, police,
-EMS, rescue). Dispatch saves those teams on the ticket. It does not dial 911,
-contact a department, or read a script aloud.
+EMS, rescue). Dispatch saves those teams on the ticket and radios the reporter
+which teams the coordinator is sending. It does not dial 911, contact a
+department, or read a script aloud. The map's driving animation from the
+nearest station is a simulation.
 
 ## Quickstart
 
@@ -115,7 +145,7 @@ demonstrate the map.
 Not the first AI on Meshtastic. Not "disaster-proof." No medical advice, and
 it does not replace or place 911 calls. "Works offline" applies to keyword
 urgency, ticket storage, and the board's local data. Model extraction, `!ai`,
-SITREP, Snowflake sync, and map tiles need a connection.
+map lookups, station data, street routes, and map tiles need a connection.
 
 ## License
 
