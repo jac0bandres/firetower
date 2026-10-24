@@ -65,9 +65,11 @@ The board defaults to the real SQLite database (`FIRETOWER_MOCK=0`). Use
 
 The gateway listens for Meshtastic `TEXT_MESSAGE_APP` and `POSITION_APP` packets
 on `FIRETOWER_CHANNEL_INDEX`. Configure that channel with a private PSK on the
-radios. Tickets retain a JSON snapshot of the text packet and, when a position
-packet from the same node was received within 30 minutes, its coordinates and
-position packet. Tickets without a recent position have null coordinates.
+radios. The gateway exits at startup if that channel is missing, disabled, or
+uses the unencrypted/public default key. Tickets retain a JSON snapshot of the
+text packet and, when a position packet from the same node was received within
+30 minutes, its coordinates and position packet. Tickets without a recent
+position have null coordinates.
 `fixtures/mock_meshtastic_packets.json` contains synthetic Meshtastic position
 and text packets for local development; they are not captured radio
 transmissions. Mock GPS positions are clustered in North Georgia and exist only
