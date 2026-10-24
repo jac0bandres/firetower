@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -116,3 +117,56 @@ def test_mock_tickets_include_clarification_fields():
         assert "clarification_question" in ticket
         assert "clarification_response" in ticket
     assert any(ticket["clarification_question"] and ticket["clarification_response"] for ticket in tickets)
+
+
+def test_append_clarification_keeps_each_turn(ticket):
+    db.init_db()
+    db.insert_ticket(ticket)
+    db.append_clarification("FT-0001", question="Where are you?")
+    db.append_clarification("FT-0001", response="the mill")
+    db.append_clarification("FT-0001", question="What landmark is nearest to you?")
+    db.append_clarification("FT-0001", response="water tower")
+
+    stored = db.list_tickets()[0]
+    assert stored["clarification_question"] == "Where are you?\nWhat landmark is nearest to you?"
+    assert stored["clarification_response"] == "the mill\nwater tower"
+    assert stored["raw_text"] == ticket["raw_text"]
+
+
+def test_pending_steps_round_trip_and_keep_the_original_ttl():
+    db.init_db()
+    db.set_pending_clarification("!node", "FT-0001", ["location", "injured_count"], ["fields", "landmark", "address"])
+    pending = db.get_pending_clarification("!node")
+    assert pending["steps"] == ["fields", "landmark", "address"]
+    assert pending["missing_fields"] == ["location", "injured_count"]
+
+    db.set_pending_clarification(
+        "!node", "FT-0001", ["injured_count"], ["landmark", "address"], keep_created_at=True,
+    )
+    again = db.get_pending_clarification("!node")
+    assert again["steps"] == ["landmark", "address"]
+    assert again["missing_fields"] == ["injured_count"]
+    assert again["created_at"] == pending["created_at"]
+
+
+def test_pending_steps_column_migrates_onto_an_older_database():
+    with sqlite3.connect(db.DB_PATH) as connection:
+        connection.execute(
+            "CREATE TABLE pending_clarifications ("
+            "node_id TEXT PRIMARY KEY, ticket_code TEXT NOT NULL, "
+            "missing_fields TEXT NOT NULL, created_at TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO pending_clarifications(node_id, ticket_code, missing_fields, created_at) "
+            "VALUES ('!node', 'FT-0001', 'location', ?)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+
+    db.init_db()
+
+    with db.connect() as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(pending_clarifications)")}
+    assert "question_steps" in columns
+    pending = db.get_pending_clarification("!node")
+    assert pending["missing_fields"] == ["location"]
+    assert pending["steps"] == []

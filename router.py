@@ -1,5 +1,5 @@
 """Online/offline detection. The single source of truth other modules consult
-before deciding which model tier (cloud vs. local) to use for SITREPs."""
+before using the DigitalOcean model. Offline callers get no model name."""
 
 import logging
 import os
@@ -14,7 +14,6 @@ HEALTHCHECK_INTERVAL_SECONDS = float(os.environ.get("HEALTHCHECK_INTERVAL_SECOND
 HEALTHCHECK_TIMEOUT_SECONDS = float(os.environ.get("HEALTHCHECK_TIMEOUT_SECONDS", "3"))
 
 DIGITALOCEAN_MODEL = os.environ.get("DIGITALOCEAN_MODEL", "openai-gpt-oss-20b")
-SITREP_MODEL_OFFLINE = os.environ.get("TRIAGE_MODEL", "qwen3:4b")
 
 _last_check = 0.0
 _last_result = False
@@ -43,8 +42,13 @@ def is_online(force: bool = False) -> bool:
     return _last_result
 
 
-def sitrep_model() -> str:
-    """Returns which model tier to use for SITREP summaries right now."""
-    model = DIGITALOCEAN_MODEL if is_online() else SITREP_MODEL_OFFLINE
-    logger.debug("sitrep_model -> %s", model)
-    return model
+def sitrep_model() -> str | None:
+    """DigitalOcean model for SITREP summaries when online.
+
+    Returns None when offline. There is no local-model substitute.
+    """
+    if not is_online():
+        logger.debug("sitrep_model -> none (offline)")
+        return None
+    logger.debug("sitrep_model -> %s", DIGITALOCEAN_MODEL)
+    return DIGITALOCEAN_MODEL

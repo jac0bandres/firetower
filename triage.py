@@ -1,31 +1,32 @@
-"""Urgency triage and extraction: keyword safety net + local Ollama model.
+"""Urgency triage and extraction: keyword safety net + DigitalOcean model.
 
 Precedence: EMERGENCY > PRIORITY > WELFARE > ROUTINE. The keyword net can only
 raise urgency, never lower it. A priority-node floor (see db.priority_nodes)
 additionally guarantees a sender's message never ranks below PRIORITY.
+
+Extraction calls the configured DigitalOcean model. If that model is
+unconfigured, offline, or the call fails, urgency falls back to the keyword
+net. No local Ollama model is called.
 """
 
+import json
 import logging
-import os
+import re
 
-import ollama
 from pydantic import BaseModel
 
+import ai_assistant
 import db
 
 logger = logging.getLogger(__name__)
-
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "qwen3:4b")
-TRIAGE_MODEL_BACKUP = os.environ.get("TRIAGE_MODEL_BACKUP", "llama3.2:3b")
 
 URGENCY_LEVELS = ["ROUTINE", "WELFARE", "PRIORITY", "EMERGENCY"]
 
 EMERGENCY_KEYWORDS = ["fire", "can't breathe", "bleeding", "unconscious", "trapped"]
 PRIORITY_KEYWORDS = ["insulin", "medication", "injured", "hurt"]
 
-# Passed to Ollama's `format` param. Only fields the model should produce —
-# raised_by_keyword and the priority floor are applied afterward in triage().
+# Fields the model should produce. raised_by_keyword and the priority floor
+# are applied afterward in triage(), so neither is asked of the model.
 EXTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -43,12 +44,12 @@ EXTRACTION_SCHEMA = {
 PROMPT_TEMPLATE = """You triage short field radio messages during a disaster response.
 Classify urgency as one of EMERGENCY, PRIORITY, WELFARE, or ROUTINE, and extract
 the location, what happened, and injured_count (an integer, or null if unknown)
-from the message below. Respond with JSON matching the schema only.
+from the message below. Respond with JSON matching this schema only.
+
+Schema: {schema}
 
 Message: "{text}"
 """
-
-_client = ollama.Client(host=OLLAMA_HOST)
 
 
 class TriageResult(BaseModel):
@@ -73,28 +74,54 @@ def keyword_floor(text: str) -> str | None:
     return None
 
 
-def extract_with_model(text: str) -> TriageResult:
-    prompt = PROMPT_TEMPLATE.format(text=text)
-    for model in (TRIAGE_MODEL, TRIAGE_MODEL_BACKUP):
-        try:
-            response = _client.chat(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                format=EXTRACTION_SCHEMA,
-                options={"temperature": 0},
-                think=False,
-            )
-            result = TriageResult.model_validate_json(response.message.content)
-            logger.info("extraction ok model=%s urgency=%s", model, result.urgency)
-            return result
-        except Exception:
-            logger.warning("extraction failed model=%s, falling back", model, exc_info=True)
-
-    # Both models failed (unreachable, bad JSON, etc.) — degrade to keyword-only
-    # rather than dropping the message.
+def _keyword_only(text: str) -> TriageResult:
     floor = keyword_floor(text)
-    logger.error("both models unreachable, degrading to keyword-only urgency=%s", floor or "ROUTINE")
+    logger.error("cloud extraction unavailable, degrading to keyword-only urgency=%s", floor or "ROUTINE")
     return TriageResult(urgency=floor or "ROUTINE", raised_by_keyword=bool(floor))
+
+
+def _extraction_payload(content: str) -> dict:
+    text = ai_assistant._strip_thinking(content).strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1)
+    else:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end > start:
+            text = text[start:end + 1]
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("extraction payload was not an object")
+    urgency = payload.get("urgency")
+    if isinstance(urgency, str):
+        payload["urgency"] = urgency.strip().upper()
+    if payload.get("urgency") not in URGENCY_LEVELS:
+        raise ValueError("invalid urgency")
+    return payload
+
+
+def extract_with_model(text: str) -> TriageResult:
+    prompt = (
+        PROMPT_TEMPLATE
+        .replace("{schema}", json.dumps(EXTRACTION_SCHEMA))
+        .replace("{text}", text)
+    )
+    try:
+        content = ai_assistant.complete_raw(
+            [{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        result = TriageResult.model_validate(_extraction_payload(content))
+        logger.info(
+            "extraction ok model=%s urgency=%s",
+            ai_assistant.DIGITALOCEAN_MODEL,
+            result.urgency,
+        )
+        return result
+    except Exception:
+        logger.warning("cloud extraction failed, falling back to keyword-only", exc_info=True)
+        return _keyword_only(text)
 
 
 def apply_priority_floor(result: TriageResult, node_id: str) -> TriageResult:

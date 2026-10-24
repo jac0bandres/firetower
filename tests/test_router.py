@@ -62,9 +62,9 @@ class TestSitrepModel:
         monkeypatch.setattr(router, "is_online", lambda force=False: True)
         assert router.sitrep_model() == router.DIGITALOCEAN_MODEL
 
-    def test_returns_local_model_when_offline(self, monkeypatch):
+    def test_returns_no_model_when_offline(self, monkeypatch):
         monkeypatch.setattr(router, "is_online", lambda force=False: False)
-        assert router.sitrep_model() == router.SITREP_MODEL_OFFLINE
+        assert router.sitrep_model() is None
 
 
 if __name__ == "__main__":

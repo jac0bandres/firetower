@@ -21,7 +21,9 @@
     "status": "open",
     "assigned_at": null,
     "synced_to_snowflake": false,
-    "position_packet_json": "{\"from\":2712847316,\"fromId\":\"!a1b2c3d4\",\"id\":3901,\"channel\":0,\"rxTime\":1792850500,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DYD+rRQV/NKkzbgBIA==\"},\"position\":{\"latitudeI\":346947200,\"longitudeI\":-844836100,\"precisionBits\":32}}}"
+    "position_packet_json": "{\"from\":2712847316,\"fromId\":\"!a1b2c3d4\",\"id\":3901,\"channel\":0,\"rxTime\":1792850500,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DYD+rRQV/NKkzbgBIA==\"},\"position\":{\"latitudeI\":346947200,\"longitudeI\":-844836100,\"precisionBits\":32}}}",
+    "dispatched_teams": null,
+    "dispatched_at": null
   },
   {
     "ticket_code": "FT-0002",
@@ -45,7 +47,9 @@
     "status": "open",
     "assigned_at": null,
     "synced_to_snowflake": false,
-    "position_packet_json": "{\"from\":2712847317,\"fromId\":\"!a1b2c3d5\",\"id\":3902,\"channel\":0,\"rxTime\":1792850716,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DYh8yBQVVKO9zbgBIA==\"},\"position\":{\"latitudeI\":348683400,\"longitudeI\":-843209900,\"precisionBits\":32}}}"
+    "position_packet_json": "{\"from\":2712847317,\"fromId\":\"!a1b2c3d5\",\"id\":3902,\"channel\":0,\"rxTime\":1792850716,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DYh8yBQVVKO9zbgBIA==\"},\"position\":{\"latitudeI\":348683400,\"longitudeI\":-843209900,\"precisionBits\":32}}}",
+    "dispatched_teams": null,
+    "dispatched_at": null
   },
   {
     "ticket_code": "FT-0003",
@@ -69,7 +73,9 @@
     "status": "open",
     "assigned_at": null,
     "synced_to_snowflake": false,
-    "position_packet_json": "{\"from\":2712847318,\"fromId\":\"!a1b2c3d6\",\"id\":3903,\"channel\":0,\"rxTime\":1792850852,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DcAfthQVwIeuzbgBIA==\"},\"position\":{\"latitudeI\":347480000,\"longitudeI\":-844200000,\"precisionBits\":32}}}"
+    "position_packet_json": "{\"from\":2712847318,\"fromId\":\"!a1b2c3d6\",\"id\":3903,\"channel\":0,\"rxTime\":1792850852,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DcAfthQVwIeuzbgBIA==\"},\"position\":{\"latitudeI\":347480000,\"longitudeI\":-844200000,\"precisionBits\":32}}}",
+    "dispatched_teams": null,
+    "dispatched_at": null
   },
   {
     "ticket_code": "FT-0004",
@@ -93,7 +99,9 @@
     "status": "assigned",
     "assigned_at": "2026-10-24T14:12:40Z",
     "synced_to_snowflake": false,
-    "position_packet_json": "{\"from\":2712847319,\"fromId\":\"!a1b2c3d7\",\"id\":3904,\"channel\":0,\"rxTime\":1792851058,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DXjerRQVyBWlzbgBIA==\"},\"position\":{\"latitudeI\":346939000,\"longitudeI\":-844819000,\"precisionBits\":32}}}"
+    "position_packet_json": "{\"from\":2712847319,\"fromId\":\"!a1b2c3d7\",\"id\":3904,\"channel\":0,\"rxTime\":1792851058,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DXjerRQVyBWlzbgBIA==\"},\"position\":{\"latitudeI\":346939000,\"longitudeI\":-844819000,\"precisionBits\":32}}}",
+    "dispatched_teams": "fire",
+    "dispatched_at": "2026-10-24T14:12:40Z"
   },
   {
     "ticket_code": "FT-0005",
@@ -117,7 +125,9 @@
     "status": "open",
     "assigned_at": null,
     "synced_to_snowflake": false,
-    "position_packet_json": "{\"from\":2712847320,\"fromId\":\"!a1b2c3d8\",\"id\":3905,\"channel\":0,\"rxTime\":1792851261,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"Dbj4mRQVwGLJzbgBIA==\"},\"position\":{\"latitudeI\":345635000,\"longitudeI\":-842440000,\"precisionBits\":32}}}"
+    "position_packet_json": "{\"from\":2712847320,\"fromId\":\"!a1b2c3d8\",\"id\":3905,\"channel\":0,\"rxTime\":1792851261,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"Dbj4mRQVwGLJzbgBIA==\"},\"position\":{\"latitudeI\":345635000,\"longitudeI\":-842440000,\"precisionBits\":32}}}",
+    "dispatched_teams": null,
+    "dispatched_at": null
   },
   {
     "ticket_code": "FT-0006",
@@ -141,6 +151,8 @@
     "status": "closed",
     "assigned_at": "2026-10-24T14:20:00Z",
     "synced_to_snowflake": true,
-    "position_packet_json": "{\"from\":2712847316,\"fromId\":\"!a1b2c3d4\",\"id\":3906,\"channel\":0,\"rxTime\":1792851454,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DWg0rhQVAGClzbgBIA==\"},\"position\":{\"latitudeI\":346961000,\"longitudeI\":-844800000,\"precisionBits\":32}}}"
+    "position_packet_json": "{\"from\":2712847316,\"fromId\":\"!a1b2c3d4\",\"id\":3906,\"channel\":0,\"rxTime\":1792851454,\"decoded\":{\"portnum\":\"POSITION_APP\",\"payload\":{\"encoding\":\"base64\",\"data\":\"DWg0rhQVAGClzbgBIA==\"},\"position\":{\"latitudeI\":346961000,\"longitudeI\":-844800000,\"precisionBits\":32}}}",
+    "dispatched_teams": null,
+    "dispatched_at": null
   }
 ]

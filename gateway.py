@@ -128,24 +128,51 @@ def on_receive(packet, interface):
     pending = db.get_pending_clarification(sender, CLARIFICATION_TTL_SECONDS)
     if pending is not None:
         db.mark_packet_seen(dedupe_key)
-        db.clear_pending_clarification(sender)
-        db.update_ticket_fields(pending["ticket_code"], clarification_response=message)
+        ticket_code = pending["ticket_code"]
         extraction = triage.extract_with_model(message)
+        ticket = _ticket_row(ticket_code) or {}
+        steps = pending.get("steps") or []
+        current_step = steps[0] if steps else None
         updates = {}
-        if "location" in pending["missing_fields"] and extraction.location:
+        # A later landmark or address reply can still fill an empty location.
+        # An address answer replaces a vaguer place, because that reply is the
+        # street or intersection the coordinator asked for.
+        if extraction.location and (not ticket.get("location") or current_step == "address"):
             updates["location"] = extraction.location
-        if "injured_count" in pending["missing_fields"] and extraction.injured_count is not None:
+        if ticket.get("injured_count") is None and extraction.injured_count is not None:
             updates["injured_count"] = extraction.injured_count
+        if not updates and _looks_like_new_report(message, extraction, ticket, current_step):
+            # The sender reported a different incident instead of answering.
+            # Drop the pending question and open a ticket for the new report.
+            logger.info(
+                "Message from %s during %s follow-up names a new place (%s); opening a new ticket",
+                sender, ticket_code, extraction.location,
+            )
+            db.clear_pending_clarification(sender)
+            pending = None
+    if pending is not None:
+        db.append_clarification(ticket_code, response=message)
         if updates:
-            db.update_ticket_fields(pending["ticket_code"], **updates)
+            db.update_ticket_fields(ticket_code, **updates)
             if "location" in updates:
                 db.upsert_person(sender, last_known_address=updates["location"])
             logger.info("Updated ticket %s from clarification by %s: %s",
-                        pending["ticket_code"], sender, updates)
-        with db.connect() as connection:
-            ticket = connection.execute(
-                "SELECT urgency FROM tickets WHERE ticket_code = ?", (pending["ticket_code"],)
-            ).fetchone()
+                        ticket_code, sender, updates)
+            ticket = _ticket_row(ticket_code) or ticket
+        remaining = _advance_clarification_steps(steps, ticket, pending["missing_fields"])
+        if remaining:
+            db.set_pending_clarification(
+                sender, ticket_code, _missing_from_ticket(ticket), remaining,
+                keep_created_at=True,
+            )
+            logger.info("Next clarification for %s is %s", ticket_code, remaining[0])
+            question = _question_for_step(
+                remaining[0], _missing_from_ticket(ticket),
+                ticket.get("raw_text") or message, ticket.get("location"),
+            )
+            _record_and_send_question(sender, ticket_code, question, interface, channel)
+            return
+        db.clear_pending_clarification(sender)
         recorded = []
         if "location" in updates:
             recorded.append(f"location: {updates['location']}")
@@ -153,11 +180,11 @@ def on_receive(packet, interface):
             recorded.append(f"injured: {updates['injured_count']}")
         note = (
             f"Updated: {'; '.join(recorded)}. " if recorded else
-            "Reply saved; location/injury fields unchanged. "
+            "Thanks, your reply is on the ticket. "
         )
-        note += f"{ticket['urgency']}; queued for coordinator review."
+        note += f"{ticket.get('urgency', 'PRIORITY')}; queued for coordinator review."
         try:
-            send_ticket_note(sender, pending["ticket_code"], note, interface, channel)
+            send_ticket_note(sender, ticket_code, note, interface, channel)
         except Exception:
             logger.exception("Clarification confirmation to %s failed", sender)
         return
@@ -202,30 +229,210 @@ def on_receive(packet, interface):
     except Exception:
         logger.exception("Ticket %s stored, but acknowledgment to %s failed", ticket_code, sender)
 
-    if result.urgency in CLARIFICATION_URGENCIES:
-        missing = _missing_fields(result)
-        if missing:
-            db.set_pending_clarification(sender, ticket_code, missing)
-            question = _ai_clarification_question(missing, message)
-            db.update_ticket_fields(ticket_code, clarification_question=question)
-            # Give the ack time to actually transmit before sending the next
-            # message — two RELIABLE sends back-to-back risk a collision on
-            # the half-duplex radio (confirmed live: the ack got delivered,
-            # the immediately-following clarification question did not).
-            time.sleep(CLARIFICATION_SEND_DELAY_SECONDS)
-            try:
-                send_ticket_note(sender, ticket_code, question, interface, channel)
-            except Exception:
-                logger.exception("Clarification question to %s failed", sender)
+    has_gps = _has_gps(latest_position)
+    steps = _clarification_steps(result, has_gps, message)
+    if steps:
+        missing = _missing_fields(result, message)
+        db.set_pending_clarification(sender, ticket_code, missing, steps)
+        if not has_gps:
+            logger.info(
+                "No GPS fix for %s on %s; clarification steps: %s",
+                sender, ticket_code, ",".join(steps),
+            )
+        question = _question_for_step(steps[0], missing, message, result.location)
+        # Give the ack time to transmit before the next DM. The same gap is
+        # used before every later question so two RELIABLE sends do not
+        # collide on the half-duplex radio.
+        _record_and_send_question(sender, ticket_code, question, interface, channel)
 
 
-def _missing_fields(result) -> list[str]:
+def _missing_fields(result, text: str | None = None) -> list[str]:
     missing = []
     if not result.location:
         missing.append("location")
-    if result.injured_count is None:
+    if result.injured_count is None and not _is_missing_person(text, result.what_happened):
         missing.append("injured_count")
     return missing
+
+
+# A missing-person sender usually cannot know an injury count, so those
+# reports skip the injury question and ask for a description instead.
+_MISSING_PERSON = re.compile(
+    r"\b(?:missing|can'?t find|cannot find|unaccounted|"
+    r"haven'?t (?:seen|heard from)|last seen)\b",
+    re.I,
+)
+_CLOTHING = re.compile(
+    r"\b(?:wearing|jacket|shirt|t-shirt|coat|hoodie|sweater|sweatshirt|dress|"
+    r"hat|cap|pants|jeans|shorts|boots|shoes|raincoat|vest)\b",
+    re.I,
+)
+
+
+def _is_missing_person(*texts: str | None) -> bool:
+    return any(text and _MISSING_PERSON.search(text) for text in texts)
+
+
+def _same_place(first: str, second: str) -> bool:
+    a = " ".join(re.findall(r"[a-z0-9]+", first.lower()))
+    b = " ".join(re.findall(r"[a-z0-9]+", second.lower()))
+    return bool(a and b) and (a in b or b in a)
+
+
+def _looks_like_new_report(message: str, extraction, ticket: dict, step: str | None) -> bool:
+    """True when a "reply" is really a separate urgent report.
+
+    It must fill none of the missing fields, be urgent on its own, and name a
+    place different from the ticket's. Landmark and address answers always
+    name another place, so those steps never split.
+    """
+    if step in ("landmark", "address"):
+        return False
+    urgent = (
+        extraction.urgency in CLARIFICATION_URGENCIES
+        or triage.keyword_floor(message) in CLARIFICATION_URGENCIES
+    )
+    known = ticket.get("location")
+    new_place = extraction.location
+    return bool(urgent and known and new_place and not _same_place(known, new_place))
+
+
+# A stated place counts as a street address when it names a road or starts
+# with a street number. Vague places ("the old mill") still need the address question.
+_ADDRESS_HINT = re.compile(
+    r"\b(?:street|st|avenue|ave|road|rd|blvd|boulevard|highway|hwy|drive|dr|"
+    r"lane|ln|court|ct|parkway|trail)\b|\d{1,6}\s+[A-Za-z]",
+    re.I,
+)
+
+
+def _has_gps(position_or_ticket) -> bool:
+    if not position_or_ticket:
+        return False
+    return (
+        position_or_ticket.get("latitude") is not None
+        and position_or_ticket.get("longitude") is not None
+    )
+
+
+def _looks_like_address(location: str | None) -> bool:
+    return bool(location and _ADDRESS_HINT.search(location))
+
+
+def _missing_from_ticket(ticket: dict) -> list[str]:
+    missing = []
+    if not ticket.get("location"):
+        missing.append("location")
+    if (
+        ticket.get("injured_count") is None
+        and not _is_missing_person(ticket.get("raw_text"), ticket.get("what_happened"))
+    ):
+        missing.append("injured_count")
+    return missing
+
+
+def _ticket_row(ticket_code: str) -> dict | None:
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM tickets WHERE ticket_code = ?", (ticket_code,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _clarification_steps(result, has_gps: bool, text: str | None = None) -> list[str]:
+    """One follow-up when the ticket already has a GPS fix.
+
+    With no fix, keep asking for the place details a coordinator needs:
+    where they are when that is still missing, then a landmark, then a
+    street or address when we do not already have one. A missing-person
+    report that does not describe the person also gets a last-seen question.
+    """
+    if result.urgency not in CLARIFICATION_URGENCIES:
+        return []
+    missing = _missing_fields(result, text)
+    describe = (
+        _is_missing_person(text, result.what_happened)
+        and not _CLOTHING.search(text or "")
+    )
+    if has_gps:
+        if missing:
+            return ["fields"]
+        return ["last_seen"] if describe else []
+    steps = ["fields"] if missing else []
+    if describe:
+        steps.append("last_seen")
+    steps.append("landmark")
+    if not _looks_like_address(getattr(result, "location", None)):
+        steps.append("address")
+    return steps
+
+
+def _prune_clarification_steps(steps: list[str], ticket: dict) -> list[str]:
+    address_known = _looks_like_address(ticket.get("location"))
+    pruned = []
+    for step in steps:
+        if step == "address" and address_known:
+            continue
+        if step == "injured_count" and ticket.get("injured_count") is not None:
+            continue
+        if step == "fields" and not _missing_from_ticket(ticket):
+            continue
+        pruned.append(step)
+    return pruned
+
+
+def _advance_clarification_steps(steps: list[str], ticket: dict, asked_missing: list[str]) -> list[str]:
+    # A GPS fix, including one that arrives mid-conversation, ends the
+    # location drill. The single-question path also ends after this reply.
+    if _has_gps(ticket):
+        return []
+    remaining = list(steps[1:]) if steps else []
+    if (
+        steps
+        and steps[0] == "fields"
+        and "injured_count" in asked_missing
+        and ticket.get("injured_count") is None
+        and "injured_count" not in remaining
+    ):
+        remaining.append("injured_count")
+    return _prune_clarification_steps(remaining, ticket)
+
+
+def _gps_detail_question(step: str) -> str:
+    if step == "landmark":
+        return "What landmark is nearest to you?"
+    if step == "address":
+        return "What street or address are you near?"
+    if step == "where":
+        return "Where are you right now?"
+    if step == "injured_count":
+        return "How many people are hurt?"
+    if step == "last_seen":
+        return "When were they last seen, and what were they wearing?"
+    return "Can you share more details?"
+
+
+def _question_for_step(step: str, missing: list[str], raw_text: str,
+                       known_location: str | None) -> str:
+    if step == "fields":
+        return _ai_clarification_question(missing or ["location"], raw_text)
+    if step == "injured_count":
+        return _ai_clarification_question(["injured_count"], raw_text)
+    if step == "where":
+        return _ai_clarification_question(["location"], raw_text)
+    if step == "last_seen":
+        return _gps_detail_question(step)
+    return _ai_gps_detail_question(step, raw_text, known_location)
+
+
+def _record_and_send_question(sender: str, ticket_code: str, question: str,
+                              interface, channel: int) -> None:
+    db.append_clarification(ticket_code, question=question)
+    time.sleep(CLARIFICATION_SEND_DELAY_SECONDS)
+    try:
+        send_ticket_note(sender, ticket_code, question, interface, channel)
+    except Exception:
+        logger.exception("Clarification question to %s failed", sender)
 
 
 def _clarification_question(missing_fields: list[str]) -> str:
@@ -240,53 +447,90 @@ def _clarification_question(missing_fields: list[str]) -> str:
     return "Can you share more details?"
 
 
+def _accepted_question_text(content) -> str | None:
+    """One short ASCII radio question, or None when the model text is unusable."""
+    if not isinstance(content, str) or re.search(r"</?think\b", content, re.I):
+        return None
+    payload = json.loads(content)
+    if not isinstance(payload, dict) or set(payload) != {"question"}:
+        return None
+    if not isinstance(payload["question"], str):
+        return None
+    question = payload["question"].strip()
+    if (
+        not question or len(question) >= 80 or not question.endswith("?")
+        or question.count("?") != 1 or not question.isascii()
+        or any(ord(character) < 32 or ord(character) == 127 for character in question)
+    ):
+        return None
+    return question
+
+
 def _ai_clarification_question(missing_fields: list[str], raw_text: str) -> str:
     fallback = _clarification_question(missing_fields)
     fields_desc = " and ".join(missing_fields)
     prompt = (
         f'A field radio report said: "{raw_text}". It is missing: {fields_desc}. '
-        "Write ONE short question (under 80 characters) asking only for that "
-        "missing information, to send back over a slow radio link. Return only "
-        'a JSON object with a "question" string, without reasoning or preamble.'
+        "Write ONE short, natural question (under 80 characters) asking only for "
+        "that missing information, to send back over a slow radio link. For "
+        "injuries, ask how many people are hurt, or ask whether a named person "
+        "is hurt when the report is about one person. Return only a JSON object "
+        'with a "question" string, without reasoning or preamble.'
     )
     try:
-        response = triage._client.chat(
-            model=triage.TRIAGE_MODEL, messages=[{"role": "user", "content": prompt}],
-            format={
-                "type": "object",
-                "properties": {"question": {"type": "string"}},
-                "required": ["question"],
-                "additionalProperties": False,
-            },
-            options={"temperature": 0}, think=False,
-        )
-        content = response.message.content
-        if not isinstance(content, str) or re.search(r"</?think\b", content, re.I):
-            return fallback
-        payload = json.loads(content)
-        if not isinstance(payload, dict) or set(payload) != {"question"}:
-            return fallback
-        if not isinstance(payload["question"], str):
-            return fallback
-        question = payload["question"].strip()
-        if (
-            not question or len(question) >= 80 or not question.endswith("?")
-            or question.count("?") != 1 or not question.isascii()
-            or any(ord(character) < 32 or ord(character) == 127 for character in question)
-        ):
-            return fallback
-        asks_location = re.search(r"\b(where|location|address|landmark|intersection)\b", question, re.I)
-        asks_count = re.search(
-            r"\b(how many|number of)\b[^?]*\b(injur\w*|hurt|wounded)\b", question, re.I
-        )
-        if "location" in missing_fields and not asks_location:
-            return fallback
-        if "injured_count" in missing_fields and not asks_count:
-            return fallback
-        return question
+        question = _accepted_question_text(ai_assistant.complete_raw(
+            [{"role": "user", "content": prompt}],
+            temperature=0,
+        ))
     except Exception:
         logger.warning("AI clarification question generation failed, using template", exc_info=True)
         return fallback
+    if question is None:
+        return fallback
+    asks_location = re.search(r"\b(where|location|address|landmark|intersection)\b", question, re.I)
+    # "How many are hurt?" or a yes/no form such as "Is your son hurt?"
+    asks_count = re.search(
+        r"\b(how many|number of|is|are|was|were|anyone|anybody)\b[^?]*"
+        r"\b(injur\w*|hurt|wounded)\b",
+        question, re.I,
+    )
+    if "location" in missing_fields and not asks_location:
+        return fallback
+    if "injured_count" in missing_fields and not asks_count:
+        return fallback
+    return question
+
+
+def _ai_gps_detail_question(step: str, raw_text: str, known_location: str | None = None) -> str:
+    """One landmark or address question. Static template if the model cannot."""
+    fallback = _gps_detail_question(step)
+    if step == "landmark":
+        ask = "the nearest landmark"
+        pattern = re.compile(r"\b(landmark|nearest|nearby|intersection|building)\b", re.I)
+    elif step == "address":
+        ask = "the street address or intersection"
+        pattern = re.compile(r"\b(address|street|road|intersection)\b", re.I)
+    else:
+        return fallback
+    known = f' Known location so far: "{known_location}".' if known_location else ""
+    prompt = (
+        f'A field radio report said: "{raw_text}".{known} '
+        "The sender GPS position did not arrive. "
+        f"Write ONE short question (under 80 characters) asking only for {ask}, "
+        "to send back over a slow radio link. Return only "
+        'a JSON object with a "question" string, without reasoning or preamble.'
+    )
+    try:
+        question = _accepted_question_text(ai_assistant.complete_raw(
+            [{"role": "user", "content": prompt}],
+            temperature=0,
+        ))
+    except Exception:
+        logger.warning("AI GPS clarification question failed, using template", exc_info=True)
+        return fallback
+    if question is None or pattern.search(question) is None:
+        return fallback
+    return question
 
 
 def on_position(packet, interface):

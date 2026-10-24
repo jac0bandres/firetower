@@ -2,19 +2,15 @@
 channel using everything triaged on that channel as context, in a
 per-sender conversation thread that persists across messages.
 
-Tries DigitalOcean's cloud model first when configured and online (a more
-capable model for this conversational feature), then always falls back to
-the local model — so this still works fully offline even if the cloud tier
-is unset, unreachable, or fails. Never claims to take real-world action
-(e.g. calling 911) itself.
+Answers with DigitalOcean's cloud model when it is configured and online.
+The local model is not used for this command. Never claims to take
+real-world action (e.g. calling 911) itself.
 """
 
-import json
 import logging
 import os
 import re
 
-import ollama
 import openai
 
 import db
@@ -22,22 +18,12 @@ import router
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "qwen3:4b")
-TRIAGE_MODEL_BACKUP = os.environ.get("TRIAGE_MODEL_BACKUP", "llama3.2:3b")
-
 DIGITALOCEAN_API_KEY = os.environ.get("DIGITALOCEAN_API_KEY", "")
 DIGITALOCEAN_MODEL = os.environ.get("DIGITALOCEAN_MODEL", "openai-gpt-oss-20b")
 DIGITALOCEAN_BASE_URL = os.environ.get("DIGITALOCEAN_BASE_URL", "")
 
 CONTEXT_TICKET_LIMIT = 40
-UNAVAILABLE_REPLY = "The local AI model is unavailable right now. Try again shortly."
-REPLY_SCHEMA = {
-    "type": "object",
-    "properties": {"reply": {"type": "string"}},
-    "required": ["reply"],
-    "additionalProperties": False,
-}
+UNAVAILABLE_REPLY = "The assistant is unavailable right now. Try again shortly."
 
 SYSTEM_PROMPT = (
     "You are Firetower's radio assistant, reached over a Meshtastic mesh "
@@ -55,9 +41,6 @@ SYSTEM_PROMPT = (
     "claim help is on the way without an explicit record confirming it. /no_think"
 )
 
-_client = ollama.Client(host=OLLAMA_HOST)
-
-
 def _cloud_configured() -> bool:
     return bool(DIGITALOCEAN_API_KEY and DIGITALOCEAN_BASE_URL)
 
@@ -68,26 +51,30 @@ def _cloud_client() -> openai.OpenAI | None:
     return openai.OpenAI(api_key=DIGITALOCEAN_API_KEY, base_url=DIGITALOCEAN_BASE_URL)
 
 
-def _call_cloud(messages: list[dict]) -> str:
+def _call_cloud(messages: list[dict], *, temperature: float = 0.2) -> str:
     client = _cloud_client()
+    if client is None:
+        raise RuntimeError("DigitalOcean is not configured")
     response = client.chat.completions.create(
-        model=DIGITALOCEAN_MODEL, messages=messages, temperature=0.2,
+        model=DIGITALOCEAN_MODEL, messages=messages, temperature=temperature,
     )
-    return response.choices[0].message.content
+    content = response.choices[0].message.content
+    if not isinstance(content, str):
+        raise ValueError("Model returned a non-string answer")
+    return content
 
 
-def _call_local(model: str, messages: list[dict]) -> str:
-    response = _client.chat(
-        model=model, messages=messages, format=REPLY_SCHEMA,
-        options={"temperature": 0.2}, think=False,
-    )
-    try:
-        payload = json.loads(response.message.content)
-    except json.JSONDecodeError:
-        payload = json.loads(_strip_thinking(response.message.content))
-    if not isinstance(payload, dict) or not isinstance(payload.get("reply"), str):
-        raise ValueError("Model returned an invalid reply object")
-    return payload["reply"]
+def complete_raw(messages: list[dict], *, temperature: float = 0.2) -> str:
+    """One DigitalOcean chat completion. Raises if the cloud model cannot be used.
+
+    Callers that still need an answer catch this and use their non-model
+    fallback. This never calls a local model.
+    """
+    if not _cloud_configured():
+        raise RuntimeError("DigitalOcean is not configured")
+    if not router.is_online():
+        raise RuntimeError("offline")
+    return _call_cloud(messages, temperature=temperature)
 
 
 def _strip_thinking(content: str) -> str:
@@ -144,26 +131,22 @@ def answer(node_id: str, question: str) -> str:
     )}]
     messages += [{"role": entry["role"], "content": entry["content"]} for entry in history]
 
-    tiers = []
-    if _cloud_configured() and router.is_online():
-        tiers.append(("digitalocean:" + DIGITALOCEAN_MODEL, lambda: _call_cloud(messages)))
-    tiers.append((TRIAGE_MODEL, lambda m=TRIAGE_MODEL: _call_local(m, messages)))
-    tiers.append((TRIAGE_MODEL_BACKUP, lambda m=TRIAGE_MODEL_BACKUP: _call_local(m, messages)))
-
     reply_text = None
-    for label, call in tiers:
+    if _cloud_configured() and router.is_online():
+        label = "digitalocean:" + DIGITALOCEAN_MODEL
         try:
-            reply_text = _strip_thinking(call())
+            reply_text = _strip_thinking(_call_cloud(messages))
             if not reply_text:
                 raise ValueError("Model returned an empty answer")
             logger.info("ai_assistant reply tier=%s node_id=%s thread_id=%s", label, node_id, thread_id)
-            break
         except Exception:
             logger.warning("ai_assistant tier failed tier=%s node_id=%s", label, node_id, exc_info=True)
+    else:
+        logger.warning("ai_assistant cloud skipped node_id=%s configured=%s", node_id, _cloud_configured())
 
     if not reply_text:
         reply_text = UNAVAILABLE_REPLY
-        logger.error("ai_assistant all tiers unavailable node_id=%s", node_id)
+        logger.error("ai_assistant cloud unavailable node_id=%s", node_id)
 
     db.add_ai_message(thread_id, "assistant", reply_text)
     return reply_text

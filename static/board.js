@@ -174,11 +174,13 @@ function showMapMessage(message) {
 function makePopup(ticket) {
   const container = document.createElement("div");
   container.append(el("h3", null, `${ticket.ticket_code} · ${ticket.urgency}`));
+  const dispatched = teamIds(ticket.dispatched_teams).map(teamLabel);
   for (const [label, value] of [
     ["Node", ticket.node_id],
     ["Report", ticket.what_happened || ticket.raw_text],
     ["Reported place", ticket.location || "Not specified"],
     ["Sender GPS received", formatTime(ticket.position_received_at)],
+    ...(dispatched.length ? [["Dispatched", dispatched.join(", ")]] : []),
   ]) {
     const line = el("p");
     line.append(el("strong", null, `${label}: `), document.createTextNode(String(value || "")));
@@ -206,6 +208,7 @@ function syncMarkers(tickets) {
     const signature = JSON.stringify([
       ticket.latitude, ticket.longitude, ticket.urgency, ticket.status, isPriorityNode,
       ticket.what_happened, ticket.raw_text, ticket.location, ticket.position_received_at,
+      ticket.dispatched_teams,
     ]);
     const previous = markerByCode.get(ticket.ticket_code);
     if (previous?.signature === signature) continue;
@@ -293,6 +296,7 @@ function matchesFilters(ticket) {
       ticket.ticket_code, ticket.node_id, ticket.raw_text, ticket.what_happened,
       ticket.location, priorityNodes[ticket.node_id],
       ticket.clarification_question, ticket.clarification_response,
+      ...teamIds(ticket.dispatched_teams).map(teamLabel),
     ].join(" ").toLowerCase();
     if (!haystack.includes(filters.query)) return false;
   }
@@ -338,7 +342,18 @@ function statusActions(ticket) {
     actions.append(button);
   };
   if (ticket.status === "open") {
-    add("Assign", "assigned");
+    const suggested = teamIds(ticket.suggested_teams);
+    if (suggested.length && !teamIds(ticket.dispatched_teams).length) {
+      const button = el("button", "btn btn-small btn-dispatch", `Dispatch ${formatTeamList(suggested)}`);
+      button.type = "button";
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        dispatchTeams(ticket.ticket_code, button);
+      });
+      actions.append(button);
+    } else if (!teamIds(ticket.dispatched_teams).length) {
+      add("Assign", "assigned");
+    }
     add("Close", "closed", "btn-quiet");
   } else if (ticket.status === "assigned") {
     add("Close", "closed");
@@ -378,6 +393,11 @@ function renderTicket(ticket) {
     top.append(el("span", "tag tag-priority", `priority node${role ? `: ${role}` : ""}`));
   }
   if (ticket.status !== "open") top.append(el("span", `status-chip ${ticket.status}`, ticket.status));
+  for (const team of teamIds(ticket.dispatched_teams)) {
+    const chip = el("span", `tag tag-team tag-team-${team}`, teamLabel(team));
+    chip.title = ticket.dispatched_at ? `Dispatched ${formatTime(ticket.dispatched_at)}` : "Dispatched from this board";
+    top.append(chip);
+  }
   const age = el("time", ageClass(ticket), `${clockTime(ticket.received_at)} · ${formatAge(ticket.received_at)}`);
   age.dateTime = ticket.received_at || "";
   age.title = formatTime(ticket.received_at);
@@ -508,42 +528,63 @@ function renderSummary() {
   $("count-oldest").textContent = oldest < 0 ? "—" : formatDuration(oldest);
 }
 
-// ---------- 911 cards ----------
+// ---------- dispatch cards ----------
+// Labels match dispatch.TEAM_LABELS. Team choice happens on the server.
 
-function emergencyScript(ticket) {
-  const report = ticket.what_happened || ticket.raw_text || "Details not provided";
-  const place = ticket.location || "Location not provided";
-  const coords = coordinates(ticket);
-  const gpsLine = coords
-    ? ` The sender radio's last known GPS position is ${coords[1].toFixed(5)}, ${coords[0].toFixed(5)} — this may not be the exact incident location.`
-    : " No GPS position is available for the sender's radio.";
-  const people = Number.isInteger(ticket.injured_count)
-    ? `The report mentions ${ticket.injured_count} injured ${ticket.injured_count === 1 ? "person" : "people"}.`
-    : "The number of injured people is unknown.";
-  return `I am calling from a field coordination point. We received an emergency report, ticket ${ticket.ticket_code}. ${report}. The reported location is ${place}.${gpsLine} ${people} The reporting radio node is ${ticket.node_id}. This is an unverified field report. Please advise and send assistance.`;
+const TEAM_LABELS = { fire: "Fire", police: "Police", ems: "EMS", rescue: "Rescue" };
+
+function teamIds(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value === "string" && value.trim()) {
+    return value.split(",").map((part) => part.trim()).filter(Boolean);
+  }
+  return [];
 }
 
-async function copyScript(text, button) {
+function teamLabel(team) {
+  return TEAM_LABELS[team] || team;
+}
+
+function formatTeamList(teams) {
+  const labels = teams.map(teamLabel);
+  if (labels.length <= 1) return labels[0] || "team";
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+}
+
+async function dispatchTeams(ticketCode, button) {
+  if (button) button.disabled = true;
   try {
-    await navigator.clipboard.writeText(text);
-    button.textContent = "Copied";
-    window.setTimeout(() => { button.textContent = "Copy script"; }, 1800);
+    const response = await fetch(
+      `/api/tickets/${encodeURIComponent(ticketCode)}/dispatch`,
+      { method: "POST" },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body = await response.json();
+    const sent = formatTeamList(teamIds(body.dispatched_teams));
+    showToast(`${ticketCode} dispatched: ${sent}`);
+    await poll();
   } catch (error) {
-    showToast("Clipboard unavailable. Select the script text instead.", true);
+    if (button) button.disabled = false;
+    showToast(`Could not dispatch ${ticketCode}`, true);
+    console.error("Dispatch failed", error);
   }
 }
 
 function renderEmergencyCards() {
-  // Oldest open emergency first: the longest-waiting call is the one a
-  // coordinator working down this list should place next.
+  // Oldest undispatched emergency first.
   const emergencies = latestTickets
-    .filter((ticket) => ticket.urgency === "EMERGENCY" && ticket.status === "open")
+    .filter((ticket) => (
+      ticket.urgency === "EMERGENCY"
+      && ticket.status === "open"
+      && teamIds(ticket.dispatched_teams).length === 0
+    ))
     .sort((a, b) => String(a.received_at).localeCompare(String(b.received_at)));
   elements.emergencyPanel.hidden = emergencies.length === 0;
   document.title = emergencies.length ? `(${emergencies.length}) Firetower` : "Firetower";
   elements.emergencyHeading.textContent = emergencies.length === 1
-    ? "1 emergency report waiting for a 911 decision"
-    : `${emergencies.length} emergency reports waiting for a 911 decision`;
+    ? "1 emergency report waiting for dispatch"
+    : `${emergencies.length} emergency reports waiting for dispatch`;
 
   const signature = JSON.stringify(emergencies);
   if (signature === lastEmergencySignature) {
@@ -557,10 +598,11 @@ function renderEmergencyCards() {
   const fragment = document.createDocumentFragment();
   for (const ticket of emergencies) {
     const card = el("article", "emergency-card");
+    const teams = teamIds(ticket.suggested_teams);
 
     const heading = el("div", "emergency-card-heading");
     const title = el("h3");
-    title.append(el("span", "code", ticket.ticket_code), document.createTextNode(" · Prepare 911 call"));
+    title.append(el("span", "code", ticket.ticket_code), document.createTextNode(" · Dispatch"));
     const waiting = el("span", "waiting", `Waiting ${formatDuration(minutesSince(ticket.received_at))}`);
     waiting.dataset.waiting = ticket.received_at || "";
     waiting.title = `Received ${formatTime(ticket.received_at)}`;
@@ -581,24 +623,23 @@ function renderEmergencyCards() {
       facts.append(span);
     }
 
-    const scriptText = emergencyScript(ticket);
-    const script = el("blockquote", "call-script", scriptText);
+    const dispatchBox = el("div", "dispatch-box");
+    const clarification = clarificationDetails(ticket);
+    if (clarification) dispatchBox.append(clarification);
+    dispatchBox.append(el("p", "dispatch-label", "Teams chosen from this report"));
+    const chips = el("div", "team-list");
+    for (const team of teams) {
+      chips.append(el("span", `team-chip team-${team}`, teamLabel(team)));
+    }
+    dispatchBox.append(chips, el("p", "dispatch-note", "Saved on this board. No call is placed."));
 
     const actions = el("div", "emergency-actions");
-    const note = el("p", "human-call-note", "You place the call. Firetower never dials.");
-    const copy = el("button", "btn btn-small btn-quiet", "Copy script");
-    copy.type = "button";
-    copy.addEventListener("click", () => copyScript(scriptText, copy));
-    const called = el("button", "btn btn-danger", "I called 911");
-    called.type = "button";
-    called.addEventListener("click", () => setStatus(ticket.ticket_code, "assigned", called));
-    actions.append(note, copy, called);
+    const send = el("button", "btn btn-dispatch", `Dispatch ${formatTeamList(teams)}`);
+    send.type = "button";
+    send.addEventListener("click", () => dispatchTeams(ticket.ticket_code, send));
+    actions.append(send);
 
-    const scriptBox = el("div", "script-box");
-    const clarification = clarificationDetails(ticket);
-    if (clarification) scriptBox.append(clarification);
-    scriptBox.append(el("p", "script-label", "Read to the dispatcher"), script);
-    card.append(heading, facts, scriptBox, actions);
+    card.append(heading, facts, dispatchBox, actions);
     fragment.append(card);
   }
   elements.emergencyCards.replaceChildren(fragment);

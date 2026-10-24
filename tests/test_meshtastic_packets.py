@@ -184,8 +184,9 @@ class PacketTests(unittest.TestCase):
                 self.assertEqual(packets.position(position_packet),
                                  (ticket["latitude"], ticket["longitude"]))
 
-    def test_triage_keeps_keyword_floor_when_local_model_is_unavailable(self):
-        with patch.object(triage._client, "chat", side_effect=ConnectionError("offline")):
+    def test_triage_keeps_keyword_floor_when_cloud_model_is_unavailable(self):
+        import ai_assistant
+        with patch.object(ai_assistant, "complete_raw", side_effect=ConnectionError("offline")):
             result = triage.triage("fire at camp", self.sender)
         self.assertEqual(result.urgency, "EMERGENCY")
         self.assertTrue(result.raised_by_keyword)

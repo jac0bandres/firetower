@@ -1,6 +1,6 @@
 """Unit tests for triage.py — keyword net, priority floor, model extraction,
-and the merged triage() pipeline. Ollama and db are mocked; no live server
-or database is needed to run these."""
+and the merged triage() pipeline. The DigitalOcean client and db are mocked;
+no live server or database is needed to run these."""
 
 import json
 import sys
@@ -11,14 +11,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import ai_assistant  # noqa: E402
 import db  # noqa: E402
 import triage  # noqa: E402
 
 
-def make_ollama_response(payload: dict):
-    response = MagicMock()
-    response.message.content = json.dumps(payload)
-    return response
+def cloud_json(payload: dict) -> str:
+    return json.dumps(payload)
 
 
 class TestKeywordFloor:
@@ -62,50 +61,49 @@ class TestApplyPriorityFloor:
 
 
 class TestExtractWithModel:
-    def test_uses_primary_model_result(self, monkeypatch):
-        mock_client = MagicMock()
-        mock_client.chat.return_value = make_ollama_response(
+    def test_does_not_import_a_local_model_client(self):
+        assert "ollama" not in sys.modules
+        assert not hasattr(triage, "_client")
+
+    def test_uses_cloud_model_result(self, monkeypatch):
+        calls = MagicMock(return_value=cloud_json(
             {"urgency": "EMERGENCY", "location": "Hwy 52", "what_happened": "bridge out", "injured_count": 2}
-        )
-        monkeypatch.setattr(triage, "_client", mock_client)
+        ))
+        monkeypatch.setattr(ai_assistant, "complete_raw", calls)
 
         result = triage.extract_with_model("bridge out on 52, two hurt")
 
         assert result.urgency == "EMERGENCY"
         assert result.location == "Hwy 52"
         assert result.injured_count == 2
-        mock_client.chat.assert_called_once()
-        assert mock_client.chat.call_args.kwargs["model"] == triage.TRIAGE_MODEL
+        calls.assert_called_once()
+        assert calls.call_args.kwargs["temperature"] == 0
+        assert "bridge out on 52, two hurt" in calls.call_args.args[0][0]["content"]
 
-    def test_falls_back_to_backup_model(self, monkeypatch):
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = [
-            RuntimeError("primary model unreachable"),
-            make_ollama_response(
-                {"urgency": "WELFARE", "location": None, "what_happened": "checking in", "injured_count": None}
-            ),
-        ]
-        monkeypatch.setattr(triage, "_client", mock_client)
+    def test_does_not_retry_a_second_model_when_cloud_fails(self, monkeypatch):
+        calls = MagicMock(side_effect=RuntimeError("cloud unreachable"))
+        monkeypatch.setattr(ai_assistant, "complete_raw", calls)
 
         result = triage.extract_with_model("checking in, we're ok")
 
-        assert result.urgency == "WELFARE"
-        assert mock_client.chat.call_count == 2
+        assert calls.call_count == 1
+        assert result.urgency == "ROUTINE"
+        assert result.raised_by_keyword is False
 
-    def test_degrades_to_keyword_only_when_both_models_fail(self, monkeypatch):
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = RuntimeError("no model available")
-        monkeypatch.setattr(triage, "_client", mock_client)
+    def test_degrades_to_keyword_only_when_cloud_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            ai_assistant, "complete_raw", MagicMock(side_effect=RuntimeError("no model available"))
+        )
 
         result = triage.extract_with_model("fire in the shelter kitchen")
 
         assert result.urgency == "EMERGENCY"
         assert result.raised_by_keyword is True
 
-    def test_degrades_to_routine_when_no_keyword_and_both_models_fail(self, monkeypatch):
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = RuntimeError("no model available")
-        monkeypatch.setattr(triage, "_client", mock_client)
+    def test_degrades_to_routine_when_no_keyword_and_cloud_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            ai_assistant, "complete_raw", MagicMock(side_effect=RuntimeError("no model available"))
+        )
 
         result = triage.extract_with_model("what's for dinner tonight")
 

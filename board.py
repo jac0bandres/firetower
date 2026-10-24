@@ -7,19 +7,24 @@ static demo. The default is FIRETOWER_MOCK=0, which serves the SQLite database.
 """
 
 import json
+import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
 import db
+import dispatch
 import router
 from logging_config import setup_logging
+
+logger = logging.getLogger(__name__)
 
 MOCK_MODE = os.environ.get("FIRETOWER_MOCK", "0") == "1"
 MOCK_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_tickets.json"
@@ -63,13 +68,31 @@ def status():
     return {"online": True if MOCK_MODE else router.is_online(), "mock": MOCK_MODE}
 
 
+def present_ticket(ticket: dict) -> dict:
+    presented = dict(ticket)
+    raw = presented.get("dispatched_teams")
+    if isinstance(raw, str):
+        presented["dispatched_teams"] = [part for part in raw.split(",") if part]
+    elif not raw:
+        presented["dispatched_teams"] = []
+    presented["suggested_teams"] = dispatch.suggest_teams(ticket)
+    return presented
+
+
+def _find_ticket(ticket_code: str) -> dict | None:
+    rows = _mock_tickets if MOCK_MODE else db.list_tickets()
+    return next((ticket for ticket in rows if ticket["ticket_code"] == ticket_code), None)
+
+
 @app.get("/api/tickets")
 def tickets(status: str | None = None):
     if MOCK_MODE:
+        rows = _mock_tickets
         if status:
-            return [t for t in _mock_tickets if t["status"] == status]
-        return _mock_tickets
-    return db.list_tickets(status)
+            rows = [t for t in rows if t["status"] == status]
+    else:
+        rows = db.list_tickets(status)
+    return [present_ticket(ticket) for ticket in rows]
 
 
 @app.post("/api/tickets/{ticket_code}/status")
@@ -78,10 +101,38 @@ def update_ticket_status(ticket_code: str, status: str):
         for t in _mock_tickets:
             if t["ticket_code"] == ticket_code:
                 t["status"] = status
+                if status == "open":
+                    t["dispatched_teams"] = None
+                    t["dispatched_at"] = None
                 return t
         return {"error": "not found"}
     db.set_ticket_status(ticket_code, status)
     return {"ticket_code": ticket_code, "status": status}
+
+
+@app.post("/api/tickets/{ticket_code}/dispatch")
+def dispatch_ticket(ticket_code: str):
+    """Record the teams chosen from the report. Does not contact anyone."""
+    ticket = _find_ticket(ticket_code)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    teams = dispatch.suggest_teams(ticket)
+    if not teams:
+        raise HTTPException(status_code=400, detail="No response team matched this report")
+    if MOCK_MODE:
+        now = datetime.now(timezone.utc).isoformat()
+        ticket["dispatched_teams"] = ",".join(teams)
+        ticket["dispatched_at"] = now
+        ticket["status"] = "assigned"
+        ticket["assigned_at"] = now
+    else:
+        try:
+            db.set_ticket_dispatch(ticket_code, teams)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Ticket not found") from None
+        ticket = _find_ticket(ticket_code)
+    logger.info("dispatch recorded ticket=%s teams=%s", ticket_code, ",".join(teams))
+    return present_ticket(ticket)
 
 
 @app.get("/api/priority_nodes")

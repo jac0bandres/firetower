@@ -46,6 +46,12 @@ class ProfileAutofillTests(unittest.TestCase):
         )
         self.ai_question_patch.start()
         self.addCleanup(self.ai_question_patch.stop)
+        self.gps_question_patch = patch.object(
+            gateway, "_ai_gps_detail_question",
+            side_effect=lambda step, text, known=None: gateway._gps_detail_question(step),
+        )
+        self.gps_question_patch.start()
+        self.addCleanup(self.gps_question_patch.stop)
 
     def make_packet(self, text, packet_id=100):
         return {
@@ -67,8 +73,11 @@ class ProfileAutofillTests(unittest.TestCase):
 
         ticket = db.list_tickets()[0]
         self.assertEqual(ticket["location"], "412 Oak St")
-        # Both location and injured_count present (one via autofill) -> no clarification.
-        self.assertEqual(len(self.interface.sent), 1)
+        # The saved address fills location, and the injury count is known.
+        # There is still no GPS fix, so the sender is asked for a landmark.
+        self.assertEqual(len(self.interface.sent), 2)
+        self.assertIn("landmark", self.interface.sent[1][0].lower())
+        self.assertEqual(db.get_pending_clarification(self.sender)["steps"], ["landmark"])
 
     def test_unknown_sender_gets_no_autofill(self):
         with patch.object(triage, "triage", return_value=TriageResult(

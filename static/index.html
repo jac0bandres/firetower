@@ -4,13 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Firetower</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png" />
   <link rel="stylesheet" href="/static/vendor/maplibre-gl.css" />
   <link rel="stylesheet" href="/static/board.css" />
 </head>
 <body>
   <header class="app-header">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
+      <img class="brand-mark" src="/static/logo.png" alt="" />
       <div>
         <h1>Firetower</h1>
         <p class="brand-sub">Mesh coordinator board</p>
@@ -56,16 +57,17 @@
       </div>
     </section>
 
-    <section id="emergency-panel" class="emergency-panel" aria-labelledby="emergency-heading" hidden>
-      <div class="emergency-banner">
+    <details id="emergency-panel" class="emergency-panel" hidden>
+      <summary class="emergency-banner">
         <span class="emergency-mark" aria-hidden="true">!</span>
         <div>
-          <h2 id="emergency-heading">0 emergency reports waiting for a 911 decision</h2>
-          <p>Oldest first. Read the script to the dispatcher yourself. Firetower never places calls.</p>
+          <h2 id="emergency-heading">0 emergency reports waiting for dispatch</h2>
+          <p>Oldest first. Teams are chosen from the report and saved on the ticket. No call is placed.</p>
         </div>
-      </div>
+        <span class="emergency-toggle" aria-hidden="true"></span>
+      </summary>
       <div id="emergency-cards" class="emergency-cards" aria-live="polite"></div>
-    </section>
+    </details>
 
     <div class="workspace">
       <section class="queue panel" aria-labelledby="queue-heading">

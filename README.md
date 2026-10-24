@@ -4,11 +4,12 @@ Off-grid triage for when the towers go down.
 
 People in the field text short messages over Meshtastic LoRa radios (no cell
 service or internet needed). A gateway laptop receives every message, and a
-**local open-weight model** ranks its urgency (EMERGENCY / PRIORITY / WELFARE
-/ ROUTINE) and pulls out where, what happened, and how many are hurt. The
-sender gets a ticket number back over the radio. A coordinator board shows
-everything sorted by urgency. Triage always runs on the laptop, so it keeps
-working with the internet unplugged.
+DigitalOcean model ranks its urgency (EMERGENCY / PRIORITY / WELFARE
+/ ROUTINE) and pulls out where, what happened, and how many are hurt when
+that client is configured and online. The sender gets a ticket number back
+over the radio. A coordinator board shows everything sorted by urgency.
+With the internet unplugged, urgency falls back to a keyword net. No local
+model is called.
 
 Other mesh AI projects answer the person who asked. Firetower sorts
 everyone's messages for the person who has to act, keeps working offline, and
@@ -24,27 +25,24 @@ flowchart TD
     B --> G["gateway.py\n(long-running process)"]
     G -->|"dedupe by packet_id\n(seen_packets, 120s)"| G
     G --> T["triage.py\nkeyword net + priority floor"]
-    T -->|"HTTP, localhost:11434\nformat=schema, think=false"| O[("Ollama\nqwen3:4b / llama3.2:3b")]
+    T -->|"chat completions when online"| CLOUD[("DigitalOcean")]
     T --> DB[("SQLite\nfiretower.db")]
     G -->|"ticket ack DM\n(FT prefix, <=200B)"| A
 
     DB --> BOARD["board.py\n(FastAPI, separate process)"]
     BOARD --> UI["Coordinator board\nstatic/"]
     BOARD --> R["router.py\nonline/offline probe"]
-    R -->|online| CLOUD[("DigitalOcean /\nhome GPU via Tailscale")]
-    R -->|offline| O
+    R -->|online| CLOUD
 
     DB -.->|"when online"| S["sync.py"]
     S -.-> SF[("Snowflake")]
 
-    BOARD -.->|"911 call card\nread aloud (optional)"| EL[("ElevenLabs\n(base station only)")]
-    EL -.->|"offline fallback"| PIP[("Piper\n(local TTS)")]
+    BOARD -->|"in-app dispatch\nfire, police, ems, rescue"| DB
 ```
 
-ElevenLabs/Piper is optional and one-directional: the board calls it to read
-the 911 script aloud at the base station. It is never wired into the mesh,
-never triggers a call by itself, and is not required for the core triage loop
-to work.
+Open emergency reports show the teams chosen from the report (fire, police,
+EMS, rescue). Dispatch saves those teams on the ticket. It does not dial 911,
+contact a department, or read a script aloud.
 
 ## Quickstart
 
@@ -52,8 +50,7 @@ to work.
 python -m venv .venv
 source .venv/bin/activate   # .venv\Scripts\activate on Windows
 pip install -r requirements.txt
-cp .env.example .env
-ollama pull qwen3:4b
+cp .env.example .env         # DigitalOcean key, model, and base URL
 
 python db.py                 # creates data/firetower.db for live mode
 FIRETOWER_MOCK=1 uvicorn board:app --reload  # demo board with North Georgia GPS pins
@@ -64,7 +61,7 @@ The board defaults to the real SQLite database (`FIRETOWER_MOCK=0`). Use
 `FIRETOWER_MOCK=1` to preview the synthetic tickets and map positions.
 
 Emergency and priority tickets with missing location or injury counts trigger
-one follow-up question, phrased by the local model with a static fallback.
+one follow-up question, phrased by DigitalOcean with a static fallback.
 The ticket's nullable `clarification_question` and `clarification_response`
 fields preserve the original question and sender's raw reply for the
 coordinator board, alongside the extracted details. They are included in the
@@ -77,16 +74,13 @@ tickets with status, timestamps and clarification exchanges. Zero injuries is
 kept distinct from an unknown count; replies are prompted to cite specific
 ticket details and identify missing facts.
 
-Local `!ai` replies use Ollama's JSON `format` schema `{"reply": string}`
-with `think=False` and temperature 0.2. Replies are JSON-parsed and checked for
-a string `reply`, with reasoning text stripped before retrying failed parsing;
-invalid or empty answers fall back through the model tiers to a fixed
-unavailable message. Clarification questions use `{"question": string}` with
-`think=False` and temperature 0. Strict JSON and question validation reject
-reasoning text, extra fields, invalid characters, questions of 80 or more
-characters, and wording that fails to ask for the missing details; failures
-use the static question template. The optional cloud assistant uses plain-text
-chat responses.
+`!ai` replies use DigitalOcean's plain-text chat completion at temperature 0.2.
+Reasoning text is stripped. If the cloud model is unconfigured, offline, or
+the call fails, a fixed unavailable message is returned. Clarification
+questions ask DigitalOcean for `{"question": string}` at temperature 0. Strict
+JSON and question validation reject reasoning text, extra fields, invalid
+characters, questions of 80 or more characters, and wording that fails to ask
+for the missing details; failures use the static question template.
 
 The gateway listens for Meshtastic `TEXT_MESSAGE_APP` and `POSITION_APP` packets
 on `FIRETOWER_CHANNEL_INDEX`. Configure that channel with a private PSK on the
@@ -119,9 +113,9 @@ demonstrate the map.
 ## What this is not
 
 Not the first AI on Meshtastic. Not "disaster-proof." No medical advice, and
-it does not replace or place 911 calls. "Works offline" applies to triage and
-the local model only — Snowflake sync, cloud SITREPs, and map tiles need a
-connection.
+it does not replace or place 911 calls. "Works offline" applies to keyword
+urgency, ticket storage, and the board's local data. Model extraction, `!ai`,
+SITREP, Snowflake sync, and map tiles need a connection.
 
 ## License
 

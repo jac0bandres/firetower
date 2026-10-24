@@ -1,5 +1,4 @@
 meshtastic
-ollama
 openai
 litellm
 pydantic

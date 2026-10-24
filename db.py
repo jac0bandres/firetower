@@ -5,6 +5,8 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
+import dispatch
+
 DB_PATH = os.environ.get("FIRETOWER_DB_PATH", "data/firetower.db")
 
 SCHEMA = """
@@ -31,6 +33,8 @@ CREATE TABLE IF NOT EXISTS tickets (
     meshtastic_packet_json TEXT,
     status TEXT NOT NULL DEFAULT 'open',
     assigned_at TEXT,
+    dispatched_teams TEXT,
+    dispatched_at TEXT,
     synced_to_snowflake INTEGER NOT NULL DEFAULT 0
 );
 
@@ -69,6 +73,7 @@ CREATE TABLE IF NOT EXISTS pending_clarifications (
     node_id TEXT PRIMARY KEY,
     ticket_code TEXT NOT NULL,
     missing_fields TEXT NOT NULL,
+    question_steps TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -107,9 +112,16 @@ def init_db():
             ("meshtastic_packet_json", "TEXT"),
             ("clarification_question", "TEXT"),
             ("clarification_response", "TEXT"),
+            ("dispatched_teams", "TEXT"),
+            ("dispatched_at", "TEXT"),
         ):
             if name not in existing:
                 conn.execute(f"ALTER TABLE tickets ADD COLUMN {name} {column_type}")
+        pending_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(pending_clarifications)")
+        }
+        if "question_steps" not in pending_columns:
+            conn.execute("ALTER TABLE pending_clarifications ADD COLUMN question_steps TEXT")
         conn.commit()
 
 
@@ -182,9 +194,37 @@ def set_ticket_status(ticket_code: str, status: str) -> None:
         raise ValueError(f"Invalid ticket status: {status}")
     assigned_at = datetime.now(timezone.utc).isoformat() if status == "assigned" else None
     with connect() as conn:
+        if status == "open":
+            conn.execute(
+                "UPDATE tickets SET status = ?, assigned_at = ?, "
+                "dispatched_teams = NULL, dispatched_at = NULL WHERE ticket_code = ?",
+                (status, assigned_at, ticket_code),
+            )
+        else:
+            conn.execute(
+                "UPDATE tickets SET status = ?, assigned_at = ? WHERE ticket_code = ?",
+                (status, assigned_at, ticket_code),
+            )
+        conn.commit()
+
+
+def set_ticket_dispatch(ticket_code: str, teams: list[str]) -> None:
+    """Record an in-app dispatch and mark the ticket assigned.
+
+    `teams` is a list of ids from dispatch.TEAMS. Nothing is sent off the laptop.
+    """
+    ordered = dispatch.normalize_teams(teams)
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM tickets WHERE ticket_code = ?", (ticket_code,)
+        ).fetchone()
+        if row is None:
+            raise LookupError(ticket_code)
         conn.execute(
-            "UPDATE tickets SET status = ?, assigned_at = ? WHERE ticket_code = ?",
-            (status, assigned_at, ticket_code),
+            "UPDATE tickets SET dispatched_teams = ?, dispatched_at = ?, "
+            "status = 'assigned', assigned_at = ? WHERE ticket_code = ?",
+            (",".join(ordered), now, now, ticket_code),
         )
         conn.commit()
 
@@ -277,15 +317,34 @@ def list_ai_thread_messages(thread_id: int) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def set_pending_clarification(node_id: str, ticket_code: str, missing_fields: list[str]) -> None:
+def set_pending_clarification(node_id: str, ticket_code: str, missing_fields: list[str],
+                              steps: list[str] | None = None, *, keep_created_at: bool = False) -> None:
+    """Store the open follow-up for a sender.
+
+    `steps` is the remaining question sequence. `keep_created_at` continues an
+    existing sequence without extending the clarification TTL.
+    """
+    missing_value = ",".join(missing_fields)
+    steps_value = None if steps is None else ",".join(steps)
     with connect() as conn:
-        conn.execute(
-            "INSERT INTO pending_clarifications(node_id, ticket_code, missing_fields, created_at) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET "
-            "ticket_code = excluded.ticket_code, missing_fields = excluded.missing_fields, "
-            "created_at = excluded.created_at",
-            (node_id, ticket_code, ",".join(missing_fields), datetime.now(timezone.utc).isoformat()),
-        )
+        if keep_created_at:
+            conn.execute(
+                "UPDATE pending_clarifications SET ticket_code = ?, missing_fields = ?, "
+                "question_steps = ? WHERE node_id = ?",
+                (ticket_code, missing_value, steps_value, node_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO pending_clarifications"
+                "(node_id, ticket_code, missing_fields, question_steps, created_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET "
+                "ticket_code = excluded.ticket_code, missing_fields = excluded.missing_fields, "
+                "question_steps = excluded.question_steps, created_at = excluded.created_at",
+                (
+                    node_id, ticket_code, missing_value, steps_value,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
         conn.commit()
 
 
@@ -300,7 +359,9 @@ def get_pending_clarification(node_id: str, max_age_seconds: int = 600) -> dict 
     if not (timedelta(0) <= age <= timedelta(seconds=max_age_seconds)):
         return None
     result = dict(row)
-    result["missing_fields"] = result["missing_fields"].split(",")
+    result["missing_fields"] = [field for field in result["missing_fields"].split(",") if field]
+    raw_steps = result.get("question_steps") or ""
+    result["steps"] = [step for step in raw_steps.split(",") if step]
     return result
 
 
@@ -331,6 +392,36 @@ def upsert_person(node_id: str, display_name: str | None = None,
             "display_name = excluded.display_name, last_known_address = excluded.last_known_address, "
             "updated_at = excluded.updated_at",
             (node_id, display_name, last_known_address, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def append_clarification(ticket_code: str, *, question: str | None = None,
+                         response: str | None = None) -> None:
+    """Append one follow-up question or raw sender reply, keeping earlier turns."""
+    additions = {}
+    if question is not None:
+        additions["clarification_question"] = question
+    if response is not None:
+        additions["clarification_response"] = response
+    if not additions:
+        return
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT clarification_question, clarification_response FROM tickets WHERE ticket_code = ?",
+            (ticket_code,),
+        ).fetchone()
+        if row is None:
+            return
+        assignments = []
+        values = []
+        for column, text in additions.items():
+            current = row[column]
+            assignments.append(f"{column} = ?")
+            values.append(text if not current else f"{current}\n{text}")
+        conn.execute(
+            f"UPDATE tickets SET {', '.join(assignments)} WHERE ticket_code = ?",
+            (*values, ticket_code),
         )
         conn.commit()
 
